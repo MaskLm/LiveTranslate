@@ -7,9 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version label for the zip (optional, e.g. v1.0.0)'
+        description: 'Version / tag name (required when publishing, e.g. v1.0.0-rc1)'
         required: false
+        type: string
         default: ''
+      publish_release:
+        description: 'Create a GitHub pre-release with the zip attached'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,25 +23,55 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      INPUT_VERSION: ${{ github.event.inputs.version }}
+      INPUT_PUBLISH: ${{ github.event.inputs.publish_release }}
     steps:
+      - name: Validate inputs
+        shell: pwsh
+        run: |
+          if ($env:INPUT_PUBLISH -eq 'true' -and -not $env:INPUT_VERSION) {
+            throw "publish_release requires a version (used as the release tag)"
+          }
+
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Build portable zip
         shell: pwsh
         run: |
-          $version = "${{ github.event.inputs.version }}"
+          $version = $env:INPUT_VERSION
           if (-not $version -and "${{ github.ref_type }}" -eq "tag") { $version = "${{ github.ref_name }}" }
           if ($version) { ./build_release.ps1 -Version $version } else { ./build_release.ps1 }
+
+      - name: Smoke check bundled Python
+        shell: pwsh
+        working-directory: release/LiveTranslate
+        run: |
+          .\python\python.exe -I -c "import sys; print(sys.version)"
+          # -I ignores cwd, so point the path at the app folder explicitly
+          $env:PYTHONPATH = (Get-Location).Path
+          .\python\python.exe -s ..\smoke_check.py
+          if ($LASTEXITCODE -ne 0) { throw "smoke check failed" }
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: LiveTranslate-portable
           path: release/*.zip
+          compression-level: 0
 
-      - name: Attach to GitHub Release
+      - name: Attach to GitHub Release (tag push)
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
+          files: release/*.zip
+
+      - name: Create pre-release (manual dispatch)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
           files: release/*.zip
