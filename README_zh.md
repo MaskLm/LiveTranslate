@@ -41,7 +41,7 @@ Windows 实时音频翻译工具。捕获系统音频（WASAPI loopback）和可
 
 - **操作系统**：Windows 10/11
 - **Python**：3.10–3.12（绿色版免装）
-- **GPU**（推荐）：NVIDIA 显卡 + CUDA 12.6（RTX 50 系列等 Blackwell 架构需要 CUDA 12.8）
+- **GPU**（推荐）：NVIDIA 显卡 + CUDA 12.6（RTX 50 系列等 Blackwell 架构需要 CUDA 12.8 和 570 及以上版本的 NVIDIA 驱动；安装脚本与 `update.bat` 会自动选择）
 - **网络**：需要访问翻译 API
 
 ## 快速开始
@@ -76,7 +76,7 @@ python -m venv .venv
 
 # PyTorch（三选一）
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA（RTX 50 系列）
+pip install "torch>=2.7.0" torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA（RTX 50 系列）
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu    # 仅 CPU
 
 # 依赖

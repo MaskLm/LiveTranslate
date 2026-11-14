@@ -41,7 +41,7 @@ See [English Changelog](i18n/CHANGELOG_en.md) | [中文更新日志](i18n/CHANGE
 
 - **OS**: Windows 10/11
 - **Python**: 3.10–3.12 (or use the portable build)
-- **GPU** (recommended): NVIDIA + CUDA 12.6 (Blackwell GPUs like RTX 50xx require CUDA 12.8)
+- **GPU** (recommended): NVIDIA + CUDA 12.6 (Blackwell GPUs like RTX 50xx require CUDA 12.8 + NVIDIA driver 570 or newer; the installer and `update.bat` pick it automatically)
 - **Network**: Access to a translation API
 
 ## Quick Start
@@ -76,7 +76,7 @@ python -m venv .venv
 
 # PyTorch (choose one)
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA (RTX 50xx)
+pip install "torch>=2.7.0" torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA (RTX 50xx)
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu    # CPU only
 
 # Dependencies

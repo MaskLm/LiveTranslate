@@ -63,3 +63,12 @@ def test_readmes_do_not_describe_the_removed_editdistance_workaround():
         text = path.read_text(encoding="utf-8").lower()
         assert "--no-deps" not in text
         assert "editdistance-s" not in text
+
+
+def test_ctranslate2_floor_has_cuda128_blackwell_support():
+    assert "ctranslate2>=4.6.3" in _requirement_lines()
+
+
+def test_requirements_document_cu128_torch_floor():
+    text = Path("requirements.txt").read_text(encoding="utf-8")
+    assert '"torch>=2.7.0"' in text and "whl/cu128" in text

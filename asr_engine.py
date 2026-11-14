@@ -2,12 +2,61 @@ import logging
 import gc
 import os
 
+import sys
+from importlib.util import find_spec
+from pathlib import Path
+
 import numpy as np
-from faster_whisper import WhisperModel
 
 from translator import LANGUAGE_DISPLAY
 
 log = logging.getLogger("LiveTranslate.ASR")
+
+
+def cuda_dll_dirs() -> list[str]:
+    """Directories holding cuBLAS 12 / cuDNN 9 DLLs for CTranslate2 (Windows).
+
+    The CTranslate2 wheel does not bundle them. torch's lib dir (cu126/cu128
+    builds) and nvidia-*-cu12 pip wheels (nvidia/<pkg>/bin) provide them.
+    Directories are located without importing torch.
+    """
+    roots = []
+    for pkg in ("torch", "nvidia"):
+        try:
+            spec = find_spec(pkg)
+        except (ImportError, ValueError):
+            continue
+        if spec is None:
+            continue
+        locations = list(spec.submodule_search_locations or [])
+        if not locations and spec.origin:
+            locations = [str(Path(spec.origin).parent)]
+        for loc in locations:
+            root = Path(loc)
+            if pkg == "torch":
+                roots.append(root / "lib")
+            else:
+                roots.extend(sorted(root.glob("*/bin")))
+    return [str(r) for r in roots if r.is_dir()]
+
+
+def _register_cuda_dll_dirs():
+    if sys.platform != "win32":
+        return
+    dirs = cuda_dll_dirs()
+    for d in dirs:
+        try:
+            os.add_dll_directory(d)
+        except OSError as e:
+            log.debug(f"add_dll_directory({d}) failed: {e}")
+    if dirs:
+        os.environ["PATH"] = os.pathsep.join(dirs + [os.environ.get("PATH", "")])
+        log.debug(f"CUDA DLL dirs for CTranslate2: {dirs}")
+
+
+# Must run before ctranslate2 is imported/first uses CUDA
+_register_cuda_dll_dirs()
+from faster_whisper import WhisperModel  # noqa: E402
 
 SAMPLE_RATE = 16000
 DEFAULT_PAD_SECONDS = 0.5

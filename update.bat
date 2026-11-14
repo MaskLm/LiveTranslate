@@ -63,6 +63,14 @@ set "TMP=%~dp0.tmp"
 set "TEMP=%~dp0.tmp"
 if not exist "%~dp0.tmp" mkdir "%~dp0.tmp"
 del /q ".venv\.livetranslate-ready" >nul 2>&1
+
+:: Blackwell GPUs (RTX 50xx) need the cu128 PyTorch build; repair a cu126 install
+.venv\Scripts\python.exe cuda_env.py ensure-torch
+if errorlevel 1 (
+    echo [ERROR] Failed to install the CUDA 12.8 build of PyTorch.
+    pause
+    exit /b 1
+)
 .venv\Scripts\pip.exe install -r requirements.txt --quiet
 if errorlevel 1 (
     echo [ERROR] Failed to update dependencies.

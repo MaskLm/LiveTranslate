@@ -206,22 +206,58 @@ Write-Step "Detecting GPU..."
 
 $HasNvidia = $false
 $CudaVer = "cu126"
-try {
-    $gpu = & nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>$null
-    if ($LASTEXITCODE -eq 0 -and $gpu) {
-        $HasNvidia = $true
-        Write-Ok "NVIDIA GPU detected: $($gpu.Trim())"
+$DriverMajor = 0
 
-        # Detect compute capability to choose CUDA version
-        # Blackwell (sm_120, compute_cap >= 12.0) requires cu128
-        $cc = & nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>$null
-        if ($LASTEXITCODE -eq 0 -and $cc) {
-            $ccVal = [double]($cc.Trim())
-            if ($ccVal -ge 12.0) {
+function Find-NvidiaSmi {
+    $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    foreach ($base in @($env:ProgramFiles, $env:SystemRoot)) {
+        if (-not $base) { continue }
+        foreach ($rel in @("NVIDIA Corporation\NVSMI\nvidia-smi.exe", "System32\nvidia-smi.exe")) {
+            $p = Join-Path $base $rel
+            if (Test-Path $p) { return $p }
+        }
+    }
+    return $null
+}
+
+try {
+    $smi = Find-NvidiaSmi
+    if ($smi) {
+        # compute_cap needs driver >= 510; older drivers reject the field, so
+        # fall back to name-only and match Blackwell by GPU name.
+        $rows = @(& $smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader 2>$null)
+        $haveCc = ($LASTEXITCODE -eq 0 -and $rows.Count -gt 0)
+        if (-not $haveCc) {
+            $rows = @(& $smi --query-gpu=name,driver_version --format=csv,noheader 2>$null)
+        }
+        if ($LASTEXITCODE -eq 0 -and $rows.Count -gt 0) {
+            $HasNvidia = $true
+            $isBlackwell = $false
+            foreach ($row in $rows) {
+                $f = @($row -split ',' | ForEach-Object { $_.Trim() })
+                if ($f.Count -lt 2 -or -not $f[0]) { continue }
+                Write-Ok "NVIDIA GPU detected: $($f[0]) (driver $($f[1]))"
+                $dm = 0
+                if ($f[1] -match '^(\d+)') { $dm = [int]$Matches[1] }
+                if ($DriverMajor -eq 0 -or ($dm -gt 0 -and $dm -lt $DriverMajor)) { $DriverMajor = $dm }
+                $bw = $false
+                if ($haveCc -and $f.Count -ge 3 -and $f[2] -match '^\d+(\.\d+)?$') {
+                    # Blackwell (sm_120, compute_cap >= 12.0) requires cu128
+                    $bw = ([double]::Parse($f[2], [Globalization.CultureInfo]::InvariantCulture) -ge 12.0)
+                } elseif ($f[0] -match 'RTX\s*50[5-9]0|Blackwell|\bB[12]00\b|\bGB\d{2,3}\b') {
+                    $bw = $true
+                }
+                if ($bw) { $isBlackwell = $true }
+            }
+            if ($isBlackwell) {
                 $CudaVer = "cu128"
-                Write-Ok "Blackwell+ architecture (sm_$($cc.Trim() -replace '\.','')) detected, using CUDA 12.8"
+                Write-Ok "Blackwell architecture (sm_120, RTX 50xx) detected, using CUDA 12.8"
+                if ($DriverMajor -gt 0 -and $DriverMajor -lt 570) {
+                    Write-Warn "NVIDIA driver $DriverMajor is too old for CUDA 12.8 (need >= 570). Update the GPU driver, otherwise CUDA will not work."
+                }
             } else {
-                Write-Ok "Compute capability $($cc.Trim()), using CUDA 12.6"
+                Write-Ok "Using CUDA 12.6"
             }
         }
     }
@@ -254,7 +290,9 @@ Remove-Item -LiteralPath $ReadyMarker -Force -ErrorAction SilentlyContinue
 
 if ($HasNvidia) {
     Write-Host "  Using index: $CudaVer" -ForegroundColor Gray
-    & $Pip install torch torchaudio --index-url https://download.pytorch.org/whl/$CudaVer
+    # torch >= 2.7.0 is the first release with sm_120 (RTX 50xx) kernels (cu128 only)
+    $TorchSpec = if ($CudaVer -eq "cu128") { "torch>=2.7.0" } else { "torch" }
+    & $Pip install $TorchSpec torchaudio --index-url https://download.pytorch.org/whl/$CudaVer
 } else {
     & $Pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 }
@@ -265,6 +303,13 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-Ok "PyTorch installed"
+
+if ($HasNvidia -and $CudaVer -eq "cu128") {
+    & $Python -c "import sys, torch; sys.exit(0 if 'sm_120' in torch.cuda.get_arch_list() else 1)" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Installed PyTorch does not list sm_120 kernels; RTX 50xx GPU acceleration may not work."
+    }
+}
 
 # ── Step 5: Install dependencies ──
 Write-Step "Installing dependencies from requirements.txt..."
