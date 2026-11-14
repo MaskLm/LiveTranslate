@@ -110,3 +110,21 @@ def test_smoke_check_covers_pruned_components():
                   "sherpa_onnx", "ctranslate2", "scipy.signal", "sklearn", "qwindows",
                   "torch must NOT be bundled"):
         assert token in smoke
+
+
+def test_portable_prune_keeps_numpy_tests():
+    prune = _prune_section()
+    builder = Path("build_release.ps1").read_text(encoding="utf-8")
+    assert '$TestsKeepRoots = @("numpy")' in builder
+    assert "$TestsKeepRoots -notcontains" in builder
+    assert builder.index("$TestsKeepRoots") < builder.index("Pruning unused files")
+    assert "numpy._core.tests" in builder and prune
+
+
+def test_smoke_check_sets_qt_fontdir_on_windows_only_there():
+    smoke = Path("portable/smoke_check.py").read_text(encoding="utf-8")
+    assert 'sys.platform == "win32"' in smoke
+    assert 'setdefault("QT_QPA_FONTDIR"' in smoke and "Fonts" in smoke
+    assert smoke.index("QT_QPA_FONTDIR") > smoke.index("QT_QPA_PLATFORM")
+    for f in Path(".").glob("*.py"):
+        assert "QT_QPA_FONTDIR" not in f.read_text(encoding="utf-8", errors="ignore")

@@ -131,8 +131,18 @@ $junk = @("Lib\test", "Lib\idlelib", "Lib\turtledemo", "Lib\lib2to3", "Doc", "in
 foreach ($j in $junk) { if (Test-Path $j) { Remove-Item -Recurse -Force $j } }
 # python\libs only holds MSVC import libraries (*.lib) for compiling extensions.
 Remove-Quiet (Join-Path $PyHome "libs")
+# Package roots whose "tests" dirs must stay: numpy imports numpy._core.tests at
+# runtime (numpy.testing / scipy / sklearn / librosa import path), so removing
+# it breaks scipy.signal, sklearn, etc. Source scan of scipy/sklearn/librosa/
+# numba/pooch found no other runtime import of a tests package (scipy's
+# _testutils / sklearn's utils._testing are plain modules, not tests dirs).
+$TestsKeepRoots = @("numpy")
+$SitePrefixLen = $SitePackages.TrimEnd('\').Length + 1
 Get-ChildItem $SitePackages -Recurse -Directory -Force -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -eq "tests" } |
+    Where-Object {
+        $_.Name -eq "tests" -and
+        ($TestsKeepRoots -notcontains ($_.FullName.Substring($SitePrefixLen) -split '[\\/]')[0])
+    } |
     Sort-Object { $_.FullName.Length } -Descending |
     ForEach-Object { Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue }
 # ── 6b. Prune what the app provably never loads ──

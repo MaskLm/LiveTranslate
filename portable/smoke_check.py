@@ -14,6 +14,11 @@ from pathlib import Path
 
 # Must be set before any Qt object exists; CI has no display.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# The offscreen platform ignores the Windows font database ("no fonts
+# available"); point it at the system fonts. Smoke check only, not the app.
+if sys.platform == "win32":
+    os.environ.setdefault("QT_QPA_FONTDIR",
+                          os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 
 MUST_IMPORT = ["numpy", "yaml", "openai", "anthropic", "httpx", "psutil",
                "faster_whisper", "ctranslate2", "av", "scipy.signal", "scipy.fft",
