@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 
 import httpx
@@ -227,6 +228,7 @@ class Translator:
         )
         self._json_response = json_response
         self._thinking_style_raw = thinking_style
+        self._drop_response_format = False
         if self._api_format != "anthropic" and self._thinking_style != "off":
             log.info(
                 f"Translator: thinking disabled for {model} via "
@@ -370,7 +372,7 @@ class Translator:
             extra_body.update(self._extra_body)
         if extra_body:
             kwargs["extra_body"] = extra_body
-        if self._json_response:
+        if self._json_response and not self._drop_response_format:
             kwargs["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
@@ -437,7 +439,7 @@ class Translator:
                 stream_options={"include_usage": True},
             )
         except Exception:
-            stream = self._client.chat.completions.create(**base_kwargs)
+            stream = self._create_with_fallback(base_kwargs)
 
         deadline = time.monotonic() + self._timeout
         chunks = []
@@ -455,8 +457,10 @@ class Translator:
                 if delta.content:
                     chunks.append(delta.content)
                     if not self._json_response:
-                        yield "".join(chunks)
-        result = "".join(chunks).strip()
+                        partial = self._strip_think("".join(chunks))
+                        if partial:
+                            yield partial
+        result = self._strip_think("".join(chunks).strip())
         if self._json_response:
             result = self._extract_json_translation(result)
         self._warn_if_thinking_burned(result)
@@ -464,6 +468,62 @@ class Translator:
             raise RepetitionError(result)
         self._append_history(text, result)
         yield result
+
+    def _create_with_fallback(self, kwargs):
+        """chat.completions.create that degrades on a 400.
+
+        Local/OpenAI-compatible servers (LM Studio, llama.cpp, ...) may reject
+        the auto-guessed thinking params or json_schema; drop them, remember
+        that for later calls, and retry.
+        """
+        import openai
+
+        kwargs = dict(kwargs)
+        for _ in range(3):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except openai.BadRequestError as e:
+                eb = dict(kwargs.get("extra_body") or {})
+                auto_keys = [
+                    k for k in thinking_disable_body(self._thinking_style)
+                    if k in eb and k not in self._extra_body
+                ]
+                if auto_keys:
+                    for k in auto_keys:
+                        eb.pop(k)
+                    if eb:
+                        kwargs["extra_body"] = eb
+                    else:
+                        kwargs.pop("extra_body", None)
+                    log.warning(
+                        f"Server rejected thinking params {auto_keys} ({e}); "
+                        "retrying without them"
+                    )
+                    self._thinking_style = "off"
+                elif "response_format" in kwargs:
+                    kwargs.pop("response_format")
+                    self._drop_response_format = True
+                    log.warning(
+                        f"Server rejected response_format ({e}); "
+                        "retrying without structured output"
+                    )
+                else:
+                    raise
+        return self._client.chat.completions.create(**kwargs)
+
+    _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+
+    @classmethod
+    def _strip_think(cls, text: str) -> str:
+        """Remove inline <think>...</think> blocks (also an unclosed one)."""
+        if "<think>" not in text and "</think>" not in text:
+            return text
+        text = cls._THINK_RE.sub("", text)
+        if "<think>" in text:
+            text = text.split("<think>", 1)[0]
+        if "</think>" in text:
+            text = text.split("</think>", 1)[1]
+        return text.strip()
 
     def _extract_json_translation(self, raw: str) -> str:
         """Extract translation from JSON response, fallback to raw text."""
@@ -499,13 +559,13 @@ class Translator:
         if self._api_format == "anthropic":
             return self._anthropic_sync(system_prompt, text)
         kwargs = self._build_request_kwargs(system_prompt, text, stream=False)
-        resp = self._client.chat.completions.create(**kwargs)
+        resp = self._create_with_fallback(kwargs)
         self._last_prompt_tokens = 0
         self._last_completion_tokens = 0
         if resp.usage:
             self._last_prompt_tokens = resp.usage.prompt_tokens or 0
             self._last_completion_tokens = resp.usage.completion_tokens or 0
-        result = (resp.choices[0].message.content or "").strip()
+        result = self._strip_think((resp.choices[0].message.content or "").strip())
         if self._json_response:
             result = self._extract_json_translation(result)
         self._warn_if_thinking_burned(result)
@@ -526,7 +586,7 @@ class Translator:
                 stream_options={"include_usage": True},
             )
         except Exception:
-            stream = self._client.chat.completions.create(**base_kwargs)
+            stream = self._create_with_fallback(base_kwargs)
 
         deadline = time.monotonic() + self._timeout
         chunks = []
@@ -543,7 +603,7 @@ class Translator:
                 delta = chunk.choices[0].delta
                 if delta.content:
                     chunks.append(delta.content)
-        result = "".join(chunks).strip()
+        result = self._strip_think("".join(chunks).strip())
         if self._json_response:
             result = self._extract_json_translation(result)
         self._warn_if_thinking_burned(result)
@@ -594,6 +654,8 @@ class Translator:
         result = tla.extract_text(resp.content).strip()
         if self._json_response:
             result = self._extract_json_translation(result)
+        if not result:
+            raise TranslationAPIError(tla.describe_empty(resp))
         return result
 
     def _anthropic_stream_iter(self, system_prompt, text):
@@ -624,4 +686,6 @@ class Translator:
         result = (tla.extract_text(final.content) or "".join(chunks)).strip()
         if self._json_response:
             result = self._extract_json_translation(result)
+        if not result:
+            raise TranslationAPIError(tla.describe_empty(final))
         yield result

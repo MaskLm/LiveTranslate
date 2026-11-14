@@ -319,6 +319,30 @@ def check_stop_reason(message, model=""):
         )
 
 
+def describe_empty(message) -> str:
+    """Explain why a response carried no text (block types, stop reason, usage)."""
+    types = [getattr(b, "type", "?") for b in (getattr(message, "content", None) or ())]
+    reason = getattr(message, "stop_reason", None)
+    out = getattr(getattr(message, "usage", None), "output_tokens", None)
+    hint = (
+        " - thinking likely consumed max_tokens; raise max_tokens or lower effort"
+        if reason == "max_tokens" else ""
+    )
+    return (
+        f"Claude returned no text (stop_reason={reason}, blocks={types}, "
+        f"output_tokens={out}){hint}"
+    )
+
+
+def _error_type(exc):
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error", body)
+        if isinstance(err, dict):
+            return err.get("type")
+    return None
+
+
 def map_anthropic_error(exc):
     """Map SDK exceptions to the app's error style; others returned unchanged.
 
@@ -347,7 +371,12 @@ def map_anthropic_error(exc):
     if isinstance(exc, anthropic.APIStatusError):
         msg = getattr(exc, "message", None) or str(exc)
         log.warning(f"Anthropic API error {exc.status_code}: {msg}")
-        return TranslationAPIError(f"Anthropic API error {exc.status_code}: {msg}")
+        etype = _error_type(exc)
+        return TranslationAPIError(
+            f"Anthropic API error {exc.status_code}"
+            + (f" ({etype})" if etype else "")
+            + f": {msg}"
+        )
     if isinstance(exc, anthropic.APITimeoutError):
         return TimeoutError("Anthropic request timed out")
     if isinstance(exc, anthropic.APIConnectionError):
