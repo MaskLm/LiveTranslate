@@ -44,6 +44,7 @@ from audio_capture import AudioCapture
 from vad_processor import VADProcessor
 from asr_client import ASRClient, ASRWorkerError, ASRWorkerExited, ASRWorkerTimeout
 from translator import Translator, RepetitionError
+from translator_anthropic import TranslationAPIError, TranslationRefusedError
 from transcript_writer import TranscriptWriter
 
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QMessageBox
@@ -489,6 +490,8 @@ class LiveTranslateApp:
             timeout=timeout,
             overrides=model_config.get("overrides"),
             extra_body=model_config.get("extra_body"),
+            api_format=model_config.get("api_format", "auto"),
+            anthropic_fallbacks=model_config.get("anthropic_fallbacks", True),
         )
         context_turns = model_config.get(
             "context_turns", self._config["translation"].get("context_window", 0)
@@ -1121,6 +1124,18 @@ class LiveTranslateApp:
                 self._overlay.update_translation(
                     msg_id, f"[{t('error_repetition')}]", 0
                 )
+        except TranslationRefusedError as e:
+            log.warning(f"Translation refused by model: {e}")
+            self._transcript.finalize_no_translation(msg_id)
+            if self._overlay:
+                self._overlay.update_translation(
+                    msg_id, f"[{t('error_refused')}]", 0
+                )
+        except TranslationAPIError as e:
+            log.warning(f"Translate API error: {e}")
+            self._transcript.finalize_no_translation(msg_id)
+            if self._overlay:
+                self._overlay.update_translation(msg_id, f"[error: {e}]", 0)
         except Exception as e:
             import openai
             if isinstance(e, (openai.APIConnectionError, openai.APITimeoutError,

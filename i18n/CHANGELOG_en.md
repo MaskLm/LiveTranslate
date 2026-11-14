@@ -6,6 +6,7 @@
 - New "Import HF model..." (paste a URL or repo id; backend auto-detected: CTranslate2 / transformers Whisper / SenseVoice FunASR) and "Import ONNX..." (local sherpa-onnx folder or file) buttons; custom entries are saved in user_settings.json
 - New ONNX backend (sherpa-onnx, CPU) running in the ASR worker; int8/fp32 file variant follows the compute type setting
 - New "Compute type" setting (auto/float16/bfloat16/int8*/float32): validated against CTranslate2 at load time, int8 is disabled/falls back to float16 on compute capability 12.0+ GPUs (RTX 50xx); torch models (anime-whisper, SenseVoice) honor fp16/bf16/fp32
+- Native Claude (Anthropic) API support: new per-model "API format" (Auto / OpenAI-compatible / Anthropic; Auto detects api.anthropic.com and `/anthropic` gateways), streaming and JSON output via the Messages API, per-model Effort (default low), server-side refusal fallback on first-party Opus/Sonnet, and a one-click "Load Claude preset" in the model dialog that also fills pricing; Claude-incompatible sampling parameters (temperature, top_p, penalties, seed) are disabled for Anthropic models, and auth/rate-limit/refusal errors show as warnings instead of tracebacks
 
 ## 2026-08-17
 - Incremental ASR sentence segmentation switched from PySBD to yasbd-lib (#37): API-compatible with no behavior change, adds native rules for Korean and 16 more languages (Korean previously fell back to English rules), and is much faster on long text

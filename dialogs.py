@@ -30,6 +30,8 @@ from PyQt6.QtWidgets import (
 )
 
 from model_manager import download_asr, download_silero
+import model_form
+from translator_anthropic import ANTHROPIC_EFFORTS, ANTHROPIC_MODELS
 from i18n import t, get_lang
 
 log = logging.getLogger("LiveTranslate.Dialogs")
@@ -495,7 +497,27 @@ class ModelEditDialog(QDialog):
         self._api_base = QLineEdit()
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._model = QLineEdit()
+        self._model = QComboBox()
+        self._model.setEditable(True)
+        self._model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._pending_style = None
+        self._loading = True
+        self._api_format = QComboBox()
+        for fmt in ("auto", "openai", "anthropic"):
+            self._api_format.addItem(t(f"api_format_{fmt}"), fmt)
+        self._api_format.setToolTip(t("api_format_hint"))
+        self._api_format_hint = QLabel()
+        self._api_format_hint.setStyleSheet("color: gray;")
+        self._preset_btn = QPushButton(t("btn_load_claude_preset"))
+        self._preset_btn.setToolTip(t("claude_preset_hint"))
+        self._preset_btn.clicked.connect(self._load_claude_preset)
+        self._fallback = QCheckBox(t("anthropic_fallbacks"))
+        self._fallback.setToolTip(t("anthropic_fallbacks_hint"))
+        self._fallback.setChecked(True)
+        self._effort = QComboBox()
+        for e in ANTHROPIC_EFFORTS:
+            self._effort.addItem(e, e)
+        self._effort.setCurrentIndex(self._effort.findData(model_form.DEFAULT_EFFORT))
 
         self._proxy_mode = QComboBox()
         self._proxy_mode.addItems(
@@ -509,8 +531,7 @@ class ModelEditDialog(QDialog):
         self._no_system_role = QCheckBox(t("no_system_role"))
         self._no_system_role.setToolTip(t("no_system_role_hint"))
         self._thinking_style = QComboBox()
-        for style_key in ("auto", "deepseek", "qwen", "vllm", "openai", "off"):
-            self._thinking_style.addItem(t(f"thinking_style_{style_key}"), style_key)
+        self._rebuild_thinking_styles(model_form.BASE_THINKING_STYLES, "auto")
         self._thinking_style.setToolTip(t("thinking_style_hint"))
         self._streaming = QCheckBox(t("streaming"))
         self._streaming.setToolTip(t("streaming_hint"))
@@ -541,7 +562,12 @@ class ModelEditDialog(QDialog):
         price_row.addWidget(self._output_price)
 
         layout.addRow(t("label_display_name"), self._name)
+        layout.addRow("", self._preset_btn)
         layout.addRow(t("label_api_base"), self._api_base)
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(self._api_format)
+        fmt_row.addWidget(self._api_format_hint, 1)
+        layout.addRow(t("label_api_format"), fmt_row)
         layout.addRow(t("label_api_key"), self._api_key)
         layout.addRow(t("label_model"), self._model)
         layout.addRow(t("label_proxy"), self._proxy_mode)
@@ -552,6 +578,8 @@ class ModelEditDialog(QDialog):
         layout.addRow("", self._streaming)
         layout.addRow("", self._json_response)
         layout.addRow("", self._no_system_role)
+        layout.addRow("", self._fallback)
+        self._basic_layout = layout
 
         content_layout.addWidget(basic_group)
 
@@ -607,6 +635,11 @@ class ModelEditDialog(QDialog):
             t("label_presence_penalty"), self._adv_rows["presence_penalty"][1]
         )
         adv_layout.addRow(t("label_seed"), self._adv_rows["seed"][1])
+        self._adv_layout = adv_layout
+
+        self._effort_row = self._make_override_row(self._effort)
+        adv_layout.addRow(t("label_effort"), self._effort_row[1])
+        self._effort_row[1].setToolTip(t("effort_hint"))
 
         self._adv_extra_body = QTextEdit()
         self._adv_extra_body.setPlaceholderText(
@@ -624,7 +657,10 @@ class ModelEditDialog(QDialog):
             self._name.setText(model_data.get("name", ""))
             self._api_base.setText(model_data.get("api_base", ""))
             self._api_key.setText(model_data.get("api_key", ""))
-            self._model.setText(model_data.get("model", ""))
+            self._model.setEditText(model_data.get("model", ""))
+            fmt_idx = self._api_format.findData(model_data.get("api_format", "auto"))
+            self._api_format.setCurrentIndex(max(fmt_idx, 0))
+            self._fallback.setChecked(model_data.get("anthropic_fallbacks", True))
             proxy = model_data.get("proxy", "none")
             if proxy == "system":
                 self._proxy_mode.setCurrentIndex(1)
@@ -638,9 +674,7 @@ class ModelEditDialog(QDialog):
             if style is None:
                 # Migrate the legacy no_think bool
                 style = "auto" if model_data.get("no_think", True) else "off"
-            style_idx = self._thinking_style.findData(style)
-            if style_idx >= 0:
-                self._thinking_style.setCurrentIndex(style_idx)
+            self._pending_style = style
             self._streaming.setChecked(model_data.get("streaming", True))
             self._json_response.setChecked(model_data.get("json_response", False))
             self._context_turns.setValue(model_data.get("context_turns", 0))
@@ -648,6 +682,9 @@ class ModelEditDialog(QDialog):
             self._output_price.setValue(model_data.get("output_price", 0))
 
             overrides = model_data.get("overrides") or {}
+            if overrides.get("effort") in ANTHROPIC_EFFORTS:
+                self._effort_row[0].setChecked(True)
+                self._effort.setCurrentIndex(self._effort.findData(overrides["effort"]))
             for key, (cb, _row, widget) in self._adv_rows.items():
                 if key in overrides and overrides[key] is not None:
                     cb.setChecked(True)
@@ -664,6 +701,12 @@ class ModelEditDialog(QDialog):
                 except (TypeError, ValueError):
                     pass
 
+        self._loading = False
+        self._api_base.textChanged.connect(self._update_format_state)
+        self._api_format.currentIndexChanged.connect(self._update_format_state)
+        self._model.editTextChanged.connect(self._on_model_text_changed)
+        self._update_format_state()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -672,6 +715,89 @@ class ModelEditDialog(QDialog):
         root.addWidget(buttons)
         hint = self.sizeHint()
         self.resize(hint.width(), min(hint.height(), available_screen_height(self)))
+
+    def _rebuild_thinking_styles(self, styles, selected):
+        self._thinking_style.blockSignals(True)
+        self._thinking_style.clear()
+        for key in styles:
+            self._thinking_style.addItem(t(f"thinking_style_{key}"), key)
+        idx = self._thinking_style.findData(selected)
+        self._thinking_style.setCurrentIndex(max(idx, 0))
+        self._thinking_style.blockSignals(False)
+
+    def _current_state(self):
+        return model_form.compute_field_state(
+            self._api_format.currentData(),
+            self._api_base.text(),
+            self._model.currentText(),
+        )
+
+    def _update_format_state(self, *_):
+        st = self._current_state()
+        was_anth = getattr(self, "_was_anthropic", None)
+        # Auto hint: show what the base URL resolves to
+        if self._api_format.currentData() == "auto":
+            self._api_format_hint.setText(
+                t("api_format_resolved").format(
+                    fmt=t(f"api_format_{st['resolved_format']}")
+                )
+            )
+        else:
+            self._api_format_hint.setText("")
+        anth = st["is_anthropic"]
+        # Model suggestions
+        if anth != was_anth:
+            text = self._model.currentText()
+            self._model.blockSignals(True)
+            self._model.clear()
+            if anth:
+                self._model.addItems(ANTHROPIC_MODELS)
+            self._model.setEditText(text)
+            self._model.blockSignals(False)
+            wanted = getattr(self, "_pending_style", None)
+            if wanted is None:
+                wanted = self._thinking_style.currentData() or "auto"
+            self._pending_style = None
+            self._rebuild_thinking_styles(st["thinking_styles"], wanted)
+        self._was_anthropic = anth
+        self._effort_row[1].setVisible(anth)
+        self._adv_layout.labelForField(self._effort_row[1]).setVisible(anth)
+        self._fallback.setVisible(anth)
+        self._fallback.setEnabled(st["fallback_enabled"])
+        self._fallback.setToolTip(
+            t("anthropic_fallbacks_hint")
+            if st["fallback_enabled"]
+            else t("anthropic_fallbacks_unavailable")
+        )
+        self._no_system_role.setVisible(st["show_no_system_role"])
+        for key in model_form.SAMPLING_OVERRIDE_KEYS:
+            cb, row, widget = self._adv_rows[key]
+            lbl = self._adv_layout.labelForField(row)
+            tip = "" if st["sampling_enabled"] else t("sampling_unsupported_hint")
+            row.setEnabled(st["sampling_enabled"])
+            row.setToolTip(tip)
+            if lbl is not None:
+                lbl.setEnabled(st["sampling_enabled"])
+                lbl.setToolTip(tip)
+
+    def _on_model_text_changed(self, text):
+        if self._loading or not self._current_state()["is_anthropic"]:
+            return
+        inp, out = model_form.fill_prices_if_empty(
+            text, self._input_price.value(), self._output_price.value()
+        )
+        self._input_price.setValue(inp)
+        self._output_price.setValue(out)
+
+    def _load_claude_preset(self):
+        p = model_form.preset_values()
+        self._name.setText(p["name"])
+        self._api_base.setText(p["api_base"])
+        self._api_format.setCurrentIndex(self._api_format.findData(p["api_format"]))
+        self._update_format_state()
+        self._model.setEditText(p["model"])
+        self._input_price.setValue(p["input_price"])
+        self._output_price.setValue(p["output_price"])
 
     def _make_override_row(self, widget):
         """Build a [checkbox + widget] row that disables the widget when unchecked."""
@@ -718,29 +844,6 @@ class ModelEditDialog(QDialog):
             proxy = self._proxy_url.text().strip() or "none"
         else:
             proxy = "none"
-        result = {
-            "name": self._name.text().strip(),
-            "api_base": self._api_base.text().strip(),
-            "api_key": self._api_key.text().strip(),
-            "model": self._model.text().strip(),
-            "proxy": proxy,
-        }
-        if self._no_system_role.isChecked():
-            result["no_system_role"] = True
-        thinking_style = self._thinking_style.currentData()
-        if thinking_style != "auto":
-            result["thinking_style"] = thinking_style
-        if not self._streaming.isChecked():
-            result["streaming"] = False
-        if self._json_response.isChecked():
-            result["json_response"] = True
-        if self._context_turns.value() > 0:
-            result["context_turns"] = self._context_turns.value()
-        if self._input_price.value() > 0:
-            result["input_price"] = self._input_price.value()
-        if self._output_price.value() > 0:
-            result["output_price"] = self._output_price.value()
-
         overrides = {}
         for key, (cb, _row, widget) in self._adv_rows.items():
             if cb.isChecked():
@@ -748,13 +851,30 @@ class ModelEditDialog(QDialog):
                 if isinstance(widget, QDoubleSpinBox):
                     val = round(val, 2)
                 overrides[key] = val
-        if overrides:
-            result["overrides"] = overrides
-
-        ok, data = self._parse_extra_body()
-        if ok and data:
-            result["extra_body"] = data
-        return result
+        ok, extra = self._parse_extra_body()
+        return model_form.build_model_dict(
+            {
+                "name": self._name.text(),
+                "api_base": self._api_base.text(),
+                "api_key": self._api_key.text(),
+                "model": self._model.currentText(),
+                "proxy": proxy,
+                "api_format": self._api_format.currentData(),
+                "no_system_role": self._no_system_role.isChecked(),
+                "thinking_style": self._thinking_style.currentData(),
+                "streaming": self._streaming.isChecked(),
+                "json_response": self._json_response.isChecked(),
+                "context_turns": self._context_turns.value(),
+                "input_price": self._input_price.value(),
+                "output_price": self._output_price.value(),
+                "overrides": overrides,
+                "effort": (
+                    self._effort.currentData() if self._effort_row[0].isChecked() else None
+                ),
+                "anthropic_fallbacks": self._fallback.isChecked(),
+                "extra_body": extra if ok else None,
+            }
+        )
 
 
 _I18N_DIR = Path(__file__).parent / "i18n"

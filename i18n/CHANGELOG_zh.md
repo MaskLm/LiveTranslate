@@ -6,6 +6,7 @@
 - 新增「导入 HF 模型...」(粘贴链接或仓库 ID, 自动识别 CTranslate2 / transformers Whisper / SenseVoice FunASR) 和「导入 ONNX...」(本地 sherpa-onnx 文件夹或文件); 自定义条目保存在 user_settings.json
 - 新增 ONNX 后端 (sherpa-onnx, CPU), 运行在 ASR 工作进程中; int8/fp32 文件版本跟随计算精度设置
 - 新增「计算精度」设置 (auto/float16/bfloat16/int8*/float32): 加载时按 CTranslate2 实际支持校验, 计算能力 12.0+ 的 GPU (RTX 50 系) 上 int8 不可用并回退 float16; torch 模型 (anime-whisper、SenseVoice) 支持 fp16/bf16/fp32
+- 原生支持 Claude (Anthropic) API: 模型新增「API 格式」(自动 / OpenAI 兼容 / Anthropic, 自动模式可识别 api.anthropic.com 与 `/anthropic` 网关), 通过 Messages API 支持流式与 JSON 输出, 每模型可设推理强度 (默认 low), 官方 Opus/Sonnet 支持服务端拒绝回退, 模型对话框新增「载入 Claude 预设」一键填入 (含价格); Anthropic 模型下不被 Claude 接受的采样参数 (temperature、top_p、惩罚项、seed) 会被禁用, 鉴权/限流/拒绝类错误只显示警告不再打印堆栈
 
 ## 2026-08-17
 - 增量 ASR 的分句库从 PySBD 切换到 yasbd-lib (#37): API 兼容无行为变化, 新增韩语等 17 种语言的原生分句规则 (此前韩语回退英语规则), 长文本分割速度大幅提升
