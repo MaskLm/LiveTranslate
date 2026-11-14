@@ -22,6 +22,16 @@ function Invoke-Native {
     if ($code -ne 0) { throw "$Exe failed with exit code $code" }
 }
 
+function Get-DirMb {
+    param([string]$Path)
+    $sum = (Get-ChildItem $Path -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+    [math]::Round(([double]$sum) / 1MB, 1)
+}
+function Remove-Quiet {
+    param([string]$Path)
+    if (Test-Path $Path) { Remove-Item -Recurse -Force $Path -ErrorAction SilentlyContinue }
+}
+
 $UvUrl  = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
 $OutDir = Join-Path $ProjectDir "release"
 $Stage  = Join-Path $OutDir "LiveTranslate"
@@ -119,10 +129,97 @@ Write-Step "Trimming and precompiling..."
 $junk = @("Lib\test", "Lib\idlelib", "Lib\turtledemo", "Lib\lib2to3", "Doc", "include") |
     ForEach-Object { Join-Path $PyHome $_ }
 foreach ($j in $junk) { if (Test-Path $j) { Remove-Item -Recurse -Force $j } }
+# python\libs only holds MSVC import libraries (*.lib) for compiling extensions.
+Remove-Quiet (Join-Path $PyHome "libs")
 Get-ChildItem $SitePackages -Recurse -Directory -Force -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -eq "tests" } |
     Sort-Object { $_.FullName.Length } -Descending |
     ForEach-Object { Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue }
+# ── 6b. Prune what the app provably never loads ──
+# Every rule below is allowlist- or evidence-based; the CI smoke check
+# (portable/smoke_check.py) exercises Qt/jieba/numba/etc. so over-pruning fails
+# the build instead of shipping. *.dist-info (RECORD) is deliberately kept:
+# `uv pip check` in first_run.py reads it. pip and setuptools are kept too
+# (cuda_env.py ensure-torch shells out to `python -m pip`; pkg_resources).
+Write-Step "Pruning unused files..."
+$beforeMb = Get-DirMb $Stage
+Write-Host "  Size before prune: $beforeMb MB"
+
+# --- PyQt6 ---
+# The app imports only PyQt6.QtCore / QtGui / QtWidgets (grep of all *.py; no
+# dynamic imports). Qt6Svg is kept because the iconengines/qsvgicon and
+# imageformats/qsvg plugins need it. Qt6Network, Qt6Pdf, Qt6Quick*, Qt6Qml*,
+# Qt6Multimedia (+ its FFmpeg dlls), Qt6OpenGL, Qt6Sql, ... are never loaded by
+# those three modules on Windows, so everything not on the allowlist goes.
+$Qt6Root = Join-Path $SitePackages "PyQt6\Qt6"
+$Qt6Bin  = Join-Path $Qt6Root "bin"
+if (-not (Test-Path $Qt6Bin)) { throw "PyQt6\Qt6\bin not found; layout changed, update the prune step" }
+$QtKeepModules    = @("QtCore", "QtGui", "QtWidgets")                 # PyQt6\Qt*.pyd / .pyi
+$QtKeepDlls       = @("Qt6Core", "Qt6Gui", "Qt6Widgets", "Qt6Svg")    # Qt6\bin\Qt6*.dll allowlist
+# platforms (qwindows/qoffscreen), styles, imageformats + iconengines (svg),
+# platforminputcontexts (IME for CJK input) and generic (touch/tablet input).
+$QtKeepPluginDirs = @("platforms", "styles", "imageformats", "iconengines",
+                      "platforminputcontexts", "generic")
+foreach ($f in Get-ChildItem (Join-Path $SitePackages "PyQt6") -File -Filter "Qt*" -ErrorAction SilentlyContinue) {
+    $mod = ($f.Name -split '\.')[0]
+    if ($f.Extension -in @(".pyd", ".pyi") -and $QtKeepModules -notcontains $mod) { Remove-Item -Force $f.FullName }
+}
+Get-ChildItem (Join-Path $SitePackages "PyQt6") -File -Filter "*.pyi" -ErrorAction SilentlyContinue | Remove-Item -Force
+# sip build inputs for compiling extensions against PyQt6; not used at runtime.
+Remove-Quiet (Join-Path $SitePackages "PyQt6\bindings")
+Get-ChildItem $Qt6Bin -File -Force | ForEach-Object {
+    $n = $_.Name
+    $base = $_.BaseName
+    $drop = $false
+    if ($n -like "Qt6*.dll") { $drop = ($QtKeepDlls -notcontains $base) }
+    # opengl32sw (software GL), d3dcompiler_47: only for QOpenGL/RHI/Quick, QtGui
+    # raster painting + QWidget do not use them. FFmpeg dlls: QtMultimedia only.
+    elseif ($n -in @("opengl32sw.dll", "d3dcompiler_47.dll")) { $drop = $true }
+    elseif ($n -match '^(avcodec|avformat|avutil|avdevice|avfilter|swresample|swscale)-\d+\.dll$') { $drop = $true }
+    elseif ($_.Extension -eq ".exe") { $drop = $true }   # Qt tools
+    if ($drop) { Remove-Item -Force $_.FullName }
+}
+$Qt6Plugins = Join-Path $Qt6Root "plugins"
+if (Test-Path $Qt6Plugins) {
+    Get-ChildItem $Qt6Plugins -Directory | Where-Object { $QtKeepPluginDirs -notcontains $_.Name } |
+        ForEach-Object { Remove-Item -Recurse -Force $_.FullName }
+}
+# qpdf image plugin links Qt6Pdf, which is not kept.
+Remove-Quiet (Join-Path $Qt6Plugins "imageformats\qpdf.dll")
+# The app never installs a QTranslator and uses no QML.
+foreach ($d in @("qml", "translations", "resources")) { Remove-Quiet (Join-Path $Qt6Root $d) }
+foreach ($req in @("bin\Qt6Core.dll", "bin\Qt6Gui.dll", "bin\Qt6Widgets.dll",
+                   "plugins\platforms\qwindows.dll", "plugins\styles")) {
+    if (-not (Test-Path (Join-Path $Qt6Root $req))) { throw "Prune removed required Qt file: $req" }
+}
+foreach ($m in $QtKeepModules) {
+    if (-not (Get-ChildItem (Join-Path $SitePackages "PyQt6") -File -Filter "$m.*pyd")) { throw "Prune removed PyQt6 module $m" }
+}
+
+# --- jieba ---
+# lac_small is the paddle-based segmenter, only loaded by jieba.enable_paddle()
+# / use_paddle=True. funasr (ct_transformer) only calls jieba.cut(HMM=False).
+Remove-Quiet (Join-Path $SitePackages "jieba\lac_small")
+
+# --- python\Scripts ---
+# Console-script launchers (pip.exe, huggingface-cli.exe, ...) are never called:
+# the launcher and first_run.py use python.exe -m / uv. onnxruntime.dll in
+# Scripts duplicates sherpa_onnx\lib\onnxruntime.dll and is not on any DLL path.
+$ScriptsDir = Join-Path $PyHome "Scripts"
+if (Test-Path $ScriptsDir) {
+    Get-ChildItem $ScriptsDir -File -Force | Where-Object { $_.Extension -in @(".exe", ".dll") } | Remove-Item -Force
+}
+
+# --- build-time-only artifacts in site-packages ---
+# Type stubs, debug symbols, C headers and MSVC import libraries are never read
+# at runtime (nothing here compiles extensions).
+foreach ($pat in @("*.pyi", "*.pdb", "*.lib", "*.h", "*.hpp")) {
+    Get-ChildItem $SitePackages -Recurse -File -Force -Filter $pat -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+$afterMb = Get-DirMb $Stage
+Write-Ok "Prune: $beforeMb MB -> $afterMb MB (saved $([math]::Round($beforeMb - $afterMb, 1)) MB)"
+# Drop every pre-existing cache so compileall below is the only set.
 Get-ChildItem $PyHome -Recurse -Directory -Force -Filter "__pycache__" -ErrorAction SilentlyContinue |
     ForEach-Object { Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue }
 # Packages ship a few intentionally broken files; a non-zero exit is not fatal.
@@ -139,7 +236,7 @@ Write-Step "Creating archive..."
 $SevenZip = Get-Command 7z -ErrorAction SilentlyContinue
 if ($SevenZip) {
     Push-Location $OutDir
-    Invoke-Native $SevenZip.Source @("a", "-tzip", "-mx=5", "-bso0", "-bsp0", $ZipPath, "LiveTranslate")
+    Invoke-Native $SevenZip.Source @("a", "-tzip", "-mx=9", "-mfb=258", "-mpass=15", "-bso0", "-bsp0", $ZipPath, "LiveTranslate")
     Pop-Location
 } else {
     Compress-Archive -Path $Stage -DestinationPath $ZipPath -Force

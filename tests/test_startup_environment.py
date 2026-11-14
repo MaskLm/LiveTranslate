@@ -60,3 +60,52 @@ def test_proxy_parsing():
     assert mod.torch_specs("cu128") == ["torch>=2.7.0", "torchaudio"]
     assert mod.arch_covers({"arch": ["sm_61", "sm_90"], "caps": [[6, 1]]})
     assert not mod.arch_covers({"arch": ["sm_75", "sm_90"], "caps": [[6, 1]]})
+
+
+def _prune_section() -> str:
+    builder = Path("build_release.ps1").read_text(encoding="utf-8")
+    start = builder.index("Pruning unused files")
+    return builder[start : builder.index("compileall", start)]
+
+
+def test_portable_prune_keeps_qt_essentials():
+    prune = _prune_section()
+    lowered = prune.lower()
+
+    # Allowlist of Qt dlls/modules must retain the three used modules + svg deps.
+    for dll in ("Qt6Core", "Qt6Gui", "Qt6Widgets", "Qt6Svg"):
+        assert f'"{dll}"' in prune
+    for mod in ("QtCore", "QtGui", "QtWidgets"):
+        assert f'"{mod}"' in prune
+    for plugin_dir in ("platforms", "styles", "imageformats", "iconengines"):
+        assert f'"{plugin_dir}"' in prune
+    # Required files are re-checked after deletion; qwindows is never a delete target.
+    assert "plugins\\platforms\\qwindows.dll" in lowered
+    assert "throw \"prune removed required qt file" in lowered
+    # No delete rule may name qwindows, dist-info or pip directly.
+    for ln in lowered.splitlines():
+        if "remove" in ln:
+            assert "qwindows" not in ln and "dist-info" not in ln and "site-packages\\pip" not in ln
+
+
+def test_portable_prune_targets():
+    prune = _prune_section()
+
+    assert "jieba\\lac_small" in prune
+    assert "Scripts" in prune and "opengl32sw.dll" in prune and "d3dcompiler_47.dll" in prune
+    assert "avcodec" in prune
+    assert "Prune:" in prune and "Size before prune" in prune  # before/after logging
+    builder = Path("build_release.ps1").read_text(encoding="utf-8")
+    assert "-mx=9" in builder
+    # The prune runs before compileall so only one set of pycs is built.
+    assert builder.index("Pruning unused files") < builder.index("-m compileall")
+    assert "MaxZipBytes" in builder
+
+
+def test_smoke_check_covers_pruned_components():
+    smoke = Path("portable/smoke_check.py").read_text(encoding="utf-8")
+
+    for token in ("QT_QPA_PLATFORM", "QPainter", "QIcon", "jieba", "numba", "llvmlite",
+                  "sherpa_onnx", "ctranslate2", "scipy.signal", "sklearn", "qwindows",
+                  "torch must NOT be bundled"):
+        assert token in smoke
