@@ -96,7 +96,8 @@ def test_portable_prune_targets():
     assert "avcodec" in prune
     assert "Prune:" in prune and "Size before prune" in prune  # before/after logging
     builder = Path("build_release.ps1").read_text(encoding="utf-8")
-    assert "-mx=9" in builder
+    assert "-mx=7" in builder and "-mmt=on" in builder
+    assert "-mpass=15" not in builder
     # The prune runs before compileall so only one set of pycs is built.
     assert builder.index("Pruning unused files") < builder.index("-m compileall")
     assert "MaxZipBytes" in builder

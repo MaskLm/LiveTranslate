@@ -236,7 +236,7 @@ Write-Step "Creating archive..."
 $SevenZip = Get-Command 7z -ErrorAction SilentlyContinue
 if ($SevenZip) {
     Push-Location $OutDir
-    Invoke-Native $SevenZip.Source @("a", "-tzip", "-mx=9", "-mfb=258", "-mpass=15", "-bso0", "-bsp0", $ZipPath, "LiveTranslate")
+    Invoke-Native $SevenZip.Source @("a", "-tzip", "-mx=7", "-mmt=on", "-bso0", "-bsp0", $ZipPath, "LiveTranslate")
     Pop-Location
 } else {
     Compress-Archive -Path $Stage -DestinationPath $ZipPath -Force
