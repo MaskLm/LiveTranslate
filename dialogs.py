@@ -447,7 +447,7 @@ class ModelDownloadDialog(QDialog):
                         proxy=self._proxy,
                     )
                 elif m["type"].startswith("whisper-"):
-                    size = m["type"].replace("whisper-", "")
+                    size = m["type"].removeprefix("whisper-")
                     download_asr(
                         "whisper", model_size=size, hub=self._hub, proxy=self._proxy
                     )

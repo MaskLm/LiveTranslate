@@ -25,7 +25,11 @@ LANG_MAP = {
 class SenseVoiceEngine:
     """Speech-to-text using FunASR SenseVoice."""
 
-    def __init__(self, model_name=None, device="cuda", hub="ms", pad_seconds=None):
+    def __init__(
+        self, model_name=None, device="cuda", hub="ms", pad_seconds=None, model_path=None,
+        compute_type="auto",
+    ):
+        self._force_fp32 = str(compute_type).lower() in ("float32", "fp32")
         from funasr import AutoModel
         from model_manager import (
             get_local_model_path,
@@ -33,7 +37,7 @@ class SenseVoiceEngine:
             neutralize_funasr_requirements,
         )
 
-        local = get_local_model_path("sensevoice", hub=hub)
+        local = model_path or get_local_model_path("sensevoice", hub=hub)
         model = local or model_name or asr_model_id("sensevoice", hub)
         neutralize_funasr_requirements(local)
         self._set_precision(device)
@@ -93,7 +97,7 @@ class SenseVoiceEngine:
         return str(device).lower().startswith("cuda") and torch.cuda.is_available()
 
     def _set_precision(self, device: str):
-        self._use_fp16 = self._is_cuda_device(device)
+        self._use_fp16 = self._is_cuda_device(device) and not self._force_fp32
         self._precision = "fp16" if self._use_fp16 else "fp32"
 
     def _apply_model_precision(self):

@@ -21,7 +21,7 @@ Works with any system audio — videos, livestreams, voice chat. No player modif
 ## Features
 
 - **Real-time pipeline**: System audio → VAD → ASR → LLM translation → overlay
-- **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper
+- **Multiple ASR engines**: faster-whisper (incl. large-v3-turbo, kotoba-whisper, anime-whisper CT2), SenseVoice, FunASR Nano, Anime-Whisper, sherpa-onnx ONNX models; model list auto-updates and supports importing any compatible HF repo
 - **Remote ASR**: offload speech recognition to a GPU machine over HTTP — see [REMOTE_ASR.md](REMOTE_ASR.md)
 - **Any OpenAI-compatible API**: DeepSeek, Grok, Qwen, GPT, Ollama, vLLM, etc.
 - **Streaming translation display**: Real-time character-by-character translation output

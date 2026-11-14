@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-14
+- ASR model list expanded: Whisper engine now offers large-v3-turbo, distil-large-v3.5 (English), kotoba-whisper v2.0 / v2.2 (Japanese, CTranslate2), anime-whisper CT2 (fp16) and the official kotoba-whisper-v2.2 (transformers); new ONNX int8 models (SenseVoice, Paraformer-zh, Whisper small/turbo) via sherpa-onnx
+- Model list is now data-driven (`asr_registry.json`) and refreshes from the GitHub repo in the background (cached, offline-safe, honors download proxy); new "Check for new models" button searches Hugging Face for new variants — nothing is downloaded until you click Download
+- New "Import HF model..." (paste a URL or repo id; backend auto-detected: CTranslate2 / transformers Whisper / SenseVoice FunASR) and "Import ONNX..." (local sherpa-onnx folder or file) buttons; custom entries are saved in user_settings.json
+- New ONNX backend (sherpa-onnx, CPU) running in the ASR worker; int8/fp32 file variant follows the compute type setting
+- New "Compute type" setting (auto/float16/bfloat16/int8*/float32): validated against CTranslate2 at load time, int8 is disabled/falls back to float16 on compute capability 12.0+ GPUs (RTX 50xx); torch models (anime-whisper, SenseVoice) honor fp16/bf16/fp32
+
 ## 2026-08-17
 - Incremental ASR sentence segmentation switched from PySBD to yasbd-lib (#37): API-compatible with no behavior change, adds native rules for Korean and 16 more languages (Korean previously fell back to English rules), and is much faster on long text
 - Fixed empty translations showing up as untranslated same-language text with DeepSeek (#38): DeepSeek defaults to thinking mode ON and only accepts thinking.type=disabled to turn it off, while the previously sent enable_thinking=false is a Qwen-style flag it ignores; the model edit dialog now has a "Disable thinking" style selector (auto-detect / DeepSeek·Volcano Ark·GLM / Qwen·DashScope·SiliconFlow / self-hosted vLLM·SGLang / OpenAI·Grok reasoning_effort / do not send), auto-detect no longer sends unknown parameters to official OpenAI-style endpoints that reject them, and a diagnostic warning is logged when reasoning burns the whole token budget and returns an empty completion

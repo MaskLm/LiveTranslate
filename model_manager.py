@@ -72,40 +72,8 @@ ASR_MODEL_IDS = {
     "anime-whisper": "litagin/anime-whisper",
 }
 
-FUNASR_MODEL_PROFILES = {
-    "sensevoice-small": {
-        "display_name": "SenseVoice Small",
-        "family": "sensevoice",
-        "legacy_engine": "sensevoice",
-        "modelscope_id": "iic/SenseVoiceSmall",
-        "huggingface_id": "FunAudioLLM/SenseVoiceSmall",
-        "estimated_bytes": 940_000_000,
-        "supports_padding": True,
-        "supports_language": True,
-    },
-    "funasr-nano-2512": {
-        "display_name": "Fun-ASR-Nano",
-        "family": "funasr-nano",
-        "legacy_engine": "funasr-nano",
-        "modelscope_id": "FunAudioLLM/Fun-ASR-Nano-2512",
-        "huggingface_id": "FunAudioLLM/Fun-ASR-Nano-2512",
-        # includes the separately-fetched Qwen3-0.6B weights (~1.5GB)
-        "estimated_bytes": 3_500_000_000,
-        "supports_padding": False,
-        "supports_language": True,
-    },
-    "funasr-mlt-nano-2512": {
-        "display_name": "Fun-ASR-MLT-Nano",
-        "family": "funasr-nano",
-        "legacy_engine": "funasr-mlt-nano",
-        "modelscope_id": "FunAudioLLM/Fun-ASR-MLT-Nano-2512",
-        "huggingface_id": "FunAudioLLM/Fun-ASR-MLT-Nano-2512",
-        # includes the separately-fetched Qwen3-0.6B weights (~1.5GB)
-        "estimated_bytes": 3_500_000_000,
-        "supports_padding": False,
-        "supports_language": True,
-    },
-}
+# Populated in place from asr_registry (shipped JSON + cached remote + custom).
+FUNASR_MODEL_PROFILES: dict = {}
 
 DEFAULT_FUNASR_MODEL = "sensevoice-small"
 
@@ -149,15 +117,76 @@ _MODEL_SIZE_BYTES = {
     "sensevoice": 940_000_000,
     "funasr-nano": 1_050_000_000,
     "funasr-mlt-nano": 1_050_000_000,
-    "whisper-tiny": 78_000_000,
-    "whisper-base": 148_000_000,
-    "whisper-small": 488_000_000,
-    "whisper-medium": 1_530_000_000,
-    "whisper-large-v3": 3_100_000_000,
     "anime-whisper": 3_100_000_000,
 }
 
-_WHISPER_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
+# Whisper-family models selectable in the Whisper engine, populated in place
+# from asr_registry: key -> {"repo", "bytes", "note"}.
+#   WHISPER_MODELS             CTranslate2 repos (faster-whisper backend)
+#   TRANSFORMERS_WHISPER_MODELS transformers Whisper-arch repos (AnimeWhisperEngine)
+WHISPER_MODELS: dict = {}
+TRANSFORMERS_WHISPER_MODELS: dict = {}
+ONNX_MODELS: dict = {}  # sherpa-onnx HF repos (asr_onnx backend)
+_WHISPER_SIZES: list = []
+
+
+def reload_registry(custom_entries=None, include_remote=True) -> None:
+    """(Re)build the model tables in place so existing imports stay valid."""
+    import asr_registry
+
+    reg = asr_registry.load_registry(custom_entries, include_remote=include_remote)
+    WHISPER_MODELS.clear()
+    WHISPER_MODELS.update(reg["whisper"])
+    TRANSFORMERS_WHISPER_MODELS.clear()
+    TRANSFORMERS_WHISPER_MODELS.update(reg["transformers_whisper"])
+    ONNX_MODELS.clear()
+    ONNX_MODELS.update(reg["onnx"])
+    FUNASR_MODEL_PROFILES.clear()
+    FUNASR_MODEL_PROFILES.update(reg["funasr"])
+    _WHISPER_SIZES[:] = (
+        list(WHISPER_MODELS)
+        + list(TRANSFORMERS_WHISPER_MODELS)
+        + list(ONNX_MODELS)
+    )
+
+
+def _whisper_entry(model_size: str) -> dict | None:
+    return (
+        WHISPER_MODELS.get(model_size)
+        or TRANSFORMERS_WHISPER_MODELS.get(model_size)
+        or ONNX_MODELS.get(model_size)
+    )
+
+
+def whisper_kind(model_size: str) -> str | None:
+    """'ct2' | 'transformers' | 'onnx' for registry keys, None for paths/unknown."""
+    if model_size in WHISPER_MODELS:
+        return "ct2"
+    if model_size in TRANSFORMERS_WHISPER_MODELS:
+        return "transformers"
+    if model_size in ONNX_MODELS:
+        return "onnx"
+    return None
+
+
+def whisper_repo_id(model_size: str) -> str | None:
+    """HF repo id for a built-in/registry whisper model key (None if custom path)."""
+    entry = _whisper_entry(model_size)
+    return entry["repo"] if entry else None
+
+
+def whisper_estimated_bytes(model_size: str) -> int:
+    entry = _whisper_entry(model_size) or {}
+    return int(entry.get("bytes") or 0)
+
+
+def whisper_display_name(model_size: str) -> str:
+    entry = _whisper_entry(model_size) or {}
+    note = entry.get("note")
+    return f"{model_size} ({note})" if note else model_size
+
+
+reload_registry()
 
 _CACHE_MODELS = [
     ("SenseVoice Small", "funasr", "sensevoice-small"),
@@ -246,14 +275,24 @@ def is_faster_whisper_model_dir(path) -> bool:
 
 def resolve_custom_whisper_model(value) -> str | None:
     path = _custom_whisper_path(value)
-    if path and is_faster_whisper_model_dir(path):
+    if path and (is_faster_whisper_model_dir(path) or is_onnx_model_path(path)):
         return str(path.resolve())
     return None
 
 
 def _is_builtin_whisper_cache(path: Path) -> bool:
     parts = set(path.parts)
-    return any(f"models--Systran--faster-whisper-{s}" in parts for s in _WHISPER_SIZES)
+    return any(
+        "models--" + entry["repo"].replace("/", "--") in parts
+        for table in (WHISPER_MODELS, TRANSFORMERS_WHISPER_MODELS, ONNX_MODELS)
+        for entry in table.values()
+    )
+
+
+def is_onnx_model_path(path) -> bool:
+    from asr_onnx import detect_onnx_model
+
+    return detect_onnx_model(path) is not None
 
 
 def _hf_snapshot_name(path: Path) -> str | None:
@@ -397,6 +436,19 @@ def _hf_repo_complete(org: str, name: str, min_bytes: int = 50_000_000) -> bool:
     return False
 
 
+def _hf_has_transformers_weights(org: str, name: str) -> bool:
+    snap_root = MODELS_DIR / "huggingface" / "hub" / f"models--{org}--{name}" / "snapshots"
+    if not snap_root.exists():
+        return False
+    for snap in snap_root.iterdir():
+        if snap.is_dir() and (snap / "config.json").exists():
+            if any(
+                (snap / fn).exists() for fn in ("model.safetensors", "pytorch_model.bin")
+            ):
+                return True
+    return False
+
+
 def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
     if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
         model_key = (
@@ -444,12 +496,20 @@ def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
     elif engine_type == "whisper":
         if model_size not in _WHISPER_SIZES:
             return resolve_custom_whisper_model(model_size) is not None
-        min_bytes = int(
-            _MODEL_SIZE_BYTES.get(f"whisper-{model_size}", 50_000_000) * 0.5
-        )
-        return _hf_repo_complete(
-            "Systran", f"faster-whisper-{model_size}", min_bytes=min_bytes
-        )
+        org, name = whisper_repo_id(model_size).split("/")
+        kind = whisper_kind(model_size)
+        if kind == "transformers":
+            return _hf_has_transformers_weights(org, name)
+        if kind == "onnx":
+            from asr_onnx import detect_onnx_model
+
+            snap = get_hf_snapshot_path(whisper_repo_id(model_size))
+            return bool(
+                snap
+                and detect_onnx_model(snap, ONNX_MODELS[model_size]["onnx_type"])
+            )
+        min_bytes = int((whisper_estimated_bytes(model_size) or 100_000_000) * 0.5)
+        return _hf_repo_complete(org, name, min_bytes=min_bytes)
     return True
 
 
@@ -479,7 +539,7 @@ def get_missing_models(engine, model_size, hub) -> list:
         elif engine == "whisper":
             key = engine if engine != "whisper" else f"whisper-{model_size}"
             display = f"Whisper {model_size}"
-            estimated_bytes = _MODEL_SIZE_BYTES.get(key, 0)
+            estimated_bytes = whisper_estimated_bytes(model_size)
         else:
             key = engine
             display = ASR_DISPLAY_NAMES.get(engine, engine)
@@ -492,6 +552,17 @@ def get_missing_models(engine, model_size, hub) -> list:
             }
         )
     return missing
+
+
+def get_hf_snapshot_path(repo_id: str) -> str | None:
+    """Latest local HF snapshot dir for a repo cached under ./models, or None."""
+    org, name = repo_id.split("/", 1)
+    snap_dir = MODELS_DIR / "huggingface" / "hub" / f"models--{org}--{name}" / "snapshots"
+    if snap_dir.exists():
+        snaps = sorted(d for d in snap_dir.iterdir() if d.is_dir())
+        if snaps:
+            return str(snaps[-1])
+    return None
 
 
 def get_local_model_path(engine_type, hub="ms", funasr_model: str | None = None):
@@ -635,7 +706,7 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
                 if engine in FUNASR_LEGACY_ENGINE_ALIASES
                 else normalize_funasr_model_key(model_size)
             )
-            if hub == "ms":
+            if hub == "ms" and not funasr_profile(model_key).get("custom"):
                 from modelscope import snapshot_download
 
                 model_id = funasr_model_id(model_key, "ms")
@@ -663,9 +734,16 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
                 raise ValueError(f"Invalid local faster-whisper model: {model_size}")
             from huggingface_hub import snapshot_download
 
-            model_id = f"Systran/faster-whisper-{model_size}"
+            model_id = whisper_repo_id(model_size)
             log.info(f"Downloading {model_id} from HuggingFace...")
-            snapshot_download(repo_id=model_id, cache_dir=hf_cache)
+            snapshot_download(
+                repo_id=model_id,
+                cache_dir=hf_cache,
+                ignore_patterns=["*.msgpack", "*.h5", "*.onnx", "*.ot"]
+                if whisper_kind(model_size) == "transformers"
+                else None,
+                allow_patterns=ONNX_MODELS.get(model_size, {}).get("patterns"),
+            )
     log.info(f"ASR model downloaded: {engine}")
 
 
@@ -733,7 +811,8 @@ def get_cache_entries():
             entries.append((f"{name} (HuggingFace)", hf_path))
 
     for size in _WHISPER_SIZES:
-        hf_path = hf_base / f"models--Systran--faster-whisper-{size}"
+        org, name = whisper_repo_id(size).split("/")
+        hf_path = hf_base / f"models--{org}--{name}"
         if hf_path.exists() and is_asr_cached("whisper", size, "hf"):
             entries.append((f"Whisper {size}", hf_path))
 

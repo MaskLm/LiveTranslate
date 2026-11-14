@@ -16,6 +16,7 @@ class FunASREngine:
         device: str = "cuda",
         hub: str = "ms",
         pad_seconds: float | None = None,
+        compute_type: str = "auto",
     ):
         self.model_key = normalize_funasr_model_key(model_key)
         self.profile = funasr_profile(self.model_key)
@@ -24,7 +25,20 @@ class FunASREngine:
         if self.family == "sensevoice":
             from asr_sensevoice import SenseVoiceEngine
 
-            self._engine = SenseVoiceEngine(device=device, hub=hub, pad_seconds=pad_seconds)
+            model_path = None
+            if self.profile.get("custom"):
+                from model_manager import get_local_model_path
+
+                model_path = get_local_model_path(
+                    "funasr", hub=hub, funasr_model=self.model_key
+                )
+            self._engine = SenseVoiceEngine(
+                device=device,
+                hub=hub,
+                pad_seconds=pad_seconds,
+                model_path=model_path,
+                compute_type=compute_type,
+            )
         elif self.family == "funasr-nano":
             from asr_funasr_nano import FunASRNanoEngine
 

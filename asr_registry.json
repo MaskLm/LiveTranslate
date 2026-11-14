@@ -1,0 +1,131 @@
+{
+ "version": 1,
+ "updated": "2026-11-14",
+ "whisper": {
+  "tiny": {
+   "repo": "Systran/faster-whisper-tiny",
+   "bytes": 78000000
+  },
+  "base": {
+   "repo": "Systran/faster-whisper-base",
+   "bytes": 148000000
+  },
+  "small": {
+   "repo": "Systran/faster-whisper-small",
+   "bytes": 488000000
+  },
+  "medium": {
+   "repo": "Systran/faster-whisper-medium",
+   "bytes": 1530000000
+  },
+  "large-v3": {
+   "repo": "Systran/faster-whisper-large-v3",
+   "bytes": 3100000000
+  },
+  "large-v3-turbo": {
+   "repo": "dropbox-dash/faster-whisper-large-v3-turbo",
+   "bytes": 1620000000,
+   "note": "multilingual, fast"
+  },
+  "distil-large-v3.5": {
+   "repo": "distil-whisper/distil-large-v3.5-ct2",
+   "bytes": 1520000000,
+   "note": "English only"
+  },
+  "kotoba-whisper-v2.0": {
+   "repo": "kotoba-tech/kotoba-whisper-v2.0-faster",
+   "bytes": 1520000000,
+   "note": "Japanese only"
+  },
+  "kotoba-whisper-v2.2": {
+   "repo": "RoachLin/kotoba-whisper-v2.2-faster",
+   "bytes": 3030000000,
+   "compute_type": "float16",
+   "note": "Japanese only, punctuation"
+  },
+  "anime-whisper-ct2": {
+   "repo": "quantumcookie/anime-whisper-ct2-fp16",
+   "bytes": 1520000000,
+   "note": "Japanese only, anime"
+  }
+ },
+ "transformers_whisper": {
+  "kotoba-whisper-v2.2-hf": {
+   "repo": "kotoba-tech/kotoba-whisper-v2.2",
+   "bytes": 3030000000,
+   "language": "ja",
+   "note": "Japanese only, official, torch"
+  }
+ },
+ "funasr": {
+  "sensevoice-small": {
+   "display_name": "SenseVoice Small",
+   "family": "sensevoice",
+   "legacy_engine": "sensevoice",
+   "modelscope_id": "iic/SenseVoiceSmall",
+   "huggingface_id": "FunAudioLLM/SenseVoiceSmall",
+   "estimated_bytes": 940000000,
+   "supports_padding": true,
+   "supports_language": true
+  },
+  "funasr-nano-2512": {
+   "display_name": "Fun-ASR-Nano",
+   "family": "funasr-nano",
+   "legacy_engine": "funasr-nano",
+   "modelscope_id": "FunAudioLLM/Fun-ASR-Nano-2512",
+   "huggingface_id": "FunAudioLLM/Fun-ASR-Nano-2512",
+   "estimated_bytes": 3500000000,
+   "supports_padding": false,
+   "supports_language": true
+  },
+  "funasr-mlt-nano-2512": {
+   "display_name": "Fun-ASR-MLT-Nano",
+   "family": "funasr-nano",
+   "legacy_engine": "funasr-mlt-nano",
+   "modelscope_id": "FunAudioLLM/Fun-ASR-MLT-Nano-2512",
+   "huggingface_id": "FunAudioLLM/Fun-ASR-MLT-Nano-2512",
+   "estimated_bytes": 3500000000,
+   "supports_padding": false,
+   "supports_language": true
+  }
+ },
+ "onnx": {
+  "onnx-sensevoice-int8": {
+   "repo": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09",
+   "bytes": 238000000,
+   "onnx_type": "sense_voice",
+   "note": "ONNX int8, CPU, zh/en/ja/ko/yue"
+  },
+  "onnx-paraformer-zh-int8": {
+   "repo": "csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09",
+   "bytes": 228000000,
+   "onnx_type": "paraformer",
+   "patterns": [
+    "model.int8.onnx",
+    "tokens.txt"
+   ],
+   "note": "ONNX int8, CPU, zh+en"
+  },
+  "onnx-whisper-small-int8": {
+   "repo": "csukuangfj/sherpa-onnx-whisper-small",
+   "bytes": 376000000,
+   "onnx_type": "whisper",
+   "patterns": [
+    "*.int8.onnx",
+    "*tokens.txt"
+   ],
+   "note": "ONNX int8, CPU"
+  },
+  "onnx-whisper-turbo-int8": {
+   "repo": "csukuangfj/sherpa-onnx-whisper-turbo",
+   "bytes": 1040000000,
+   "onnx_type": "whisper",
+   "patterns": [
+    "turbo-encoder.int8.onnx",
+    "turbo-decoder.int8.onnx",
+    "turbo-tokens.txt"
+   ],
+   "note": "ONNX int8, CPU"
+  }
+ }
+}

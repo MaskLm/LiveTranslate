@@ -526,7 +526,9 @@ class LiveTranslateApp:
             self._config["asr"].get("remote_asr_url", "http://127.0.0.1:8765"),
         )
 
-        compute = self._config["asr"]["compute_type"]
+        compute = settings.get(
+            "compute_type", self._config["asr"].get("compute_type", "float16")
+        )
         if engine_type == "whisper":
             signature_model = cache_model_key
         elif engine_type == "funasr":
@@ -583,6 +585,7 @@ class LiveTranslateApp:
             "model_size": cache_model_key,
             "device": device,
             "compute_type": compute,
+            "torch_dtype": compute,
             "hub": hub,
             "language": settings.get(
                 "asr_language", self._config["asr"].get("language", "auto")

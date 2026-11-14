@@ -14,7 +14,9 @@ from PyQt6.QtWidgets import (
     QFontComboBox,
     QGridLayout,
     QGroupBox,
+    QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -39,6 +41,9 @@ from model_manager import (
     DEFAULT_FUNASR_MODEL,
     MODELS_DIR,
     _WHISPER_SIZES,
+    whisper_display_name,
+    whisper_estimated_bytes,
+    reload_registry,
     dir_size,
     funasr_model_options,
     funasr_supports_padding,
@@ -49,6 +54,14 @@ from model_manager import (
     normalize_funasr_model_key,
     resolve_custom_whisper_model,
 )
+from asr_precision import (
+    COMPUTE_CHOICES,
+    cuda_capability,
+    int8_blocked,
+    is_int8,
+    normalize as normalize_compute,
+)
+import asr_registry
 from i18n import t, LANGUAGES
 from subtitle_settings import SubtitleSettingsWidget
 
@@ -85,6 +98,9 @@ class ControlPanel(QWidget):
     """Settings and monitoring panel."""
 
     settings_changed = pyqtSignal(dict)
+    _registry_refreshed = pyqtSignal(bool)
+    _hf_inspected = pyqtSignal(dict)
+    _variants_found = pyqtSignal(list)
     model_changed = pyqtSignal(dict)
     models_list_changed = pyqtSignal(list, int)
     subtitle_settings_changed = pyqtSignal(dict)
@@ -135,6 +151,8 @@ class ControlPanel(QWidget):
                 "active_model": 0,
                 "hub": "ms",
             }
+
+        reload_registry(self._current_settings.get("custom_asr_models"))
 
         if "models" not in self._current_settings:
             tc = config["translation"]
@@ -379,11 +397,38 @@ class ControlPanel(QWidget):
         asr_layout.addWidget(self._ui_lang_combo, 9, 1)
         self._ui_lang_combo.currentIndexChanged.connect(self._on_ui_lang_changed)
 
+        self._compute_combo = QComboBox()
+        for ct in COMPUTE_CHOICES:
+            self._compute_combo.addItem(ct, ct)
+        self._compute_combo.setToolTip(t("compute_type_tooltip"))
+        capability = cuda_capability(0)
+        if int8_blocked(capability):
+            model = self._compute_combo.model()
+            for i in range(self._compute_combo.count()):
+                if is_int8(self._compute_combo.itemData(i)):
+                    self._compute_combo.setItemText(
+                        i, f"{self._compute_combo.itemData(i)} ({t('compute_unavailable')})"
+                    )
+                    model.item(i).setEnabled(False)
+        saved_ct = normalize_compute(
+            s.get("compute_type", self._config["asr"].get("compute_type", "float16"))
+        )
+        ct_idx = self._compute_combo.findData(saved_ct)
+        if ct_idx >= 0 and self._compute_combo.model().item(ct_idx).isEnabled():
+            self._compute_combo.setCurrentIndex(ct_idx)
+        else:
+            self._compute_combo.setCurrentIndex(self._compute_combo.findData("float16"))
+        asr_layout.addWidget(QLabel(t("label_compute_type")), 10, 0)
+        asr_layout.addWidget(self._compute_combo, 10, 1)
+        self._compute_combo.currentIndexChanged.connect(self._auto_save)
+
         layout.addWidget(asr_group)
 
         # Whisper model download — only visible when engine is Whisper
         self._whisper_group = QGroupBox(t("group_download_whisper"))
-        whisper_layout = QHBoxLayout(self._whisper_group)
+        whisper_outer = QVBoxLayout(self._whisper_group)
+        whisper_layout = QHBoxLayout()
+        whisper_outer.addLayout(whisper_layout)
         self._whisper_size_combo = QComboBox()
         saved_size = s.get(
             "whisper_model_size", self._config["asr"].get("model_size", "medium")
@@ -399,6 +444,20 @@ class ControlPanel(QWidget):
         self._whisper_dl_btn = QPushButton(t("btn_download_whisper"))
         self._whisper_dl_btn.clicked.connect(self._download_whisper)
         whisper_layout.addWidget(self._whisper_dl_btn)
+        tools_layout = QHBoxLayout()
+        whisper_outer.addLayout(tools_layout)
+        self._import_hf_btn = QPushButton(t("btn_import_hf"))
+        self._import_hf_btn.clicked.connect(self._import_hf_model)
+        self._import_onnx_btn = QPushButton(t("btn_import_onnx"))
+        self._import_onnx_btn.clicked.connect(self._import_onnx_model)
+        self._check_models_btn = QPushButton(t("btn_check_models"))
+        self._check_models_btn.clicked.connect(self._check_model_updates)
+        for b in (self._import_hf_btn, self._import_onnx_btn, self._check_models_btn):
+            tools_layout.addWidget(b)
+        self._registry_refreshed.connect(self._on_registry_refreshed)
+        self._hf_inspected.connect(self._on_hf_inspected)
+        self._variants_found.connect(self._on_variants_found)
+        QTimer.singleShot(3000, self.start_registry_refresh)
         layout.addWidget(self._whisper_group)
         self._whisper_group.setVisible(engine_idx == 0)
         self._asr_engine.currentIndexChanged.connect(
@@ -1145,6 +1204,174 @@ class ControlPanel(QWidget):
         self._on_engine_changed_whisper_vis(self._asr_engine.currentIndex())
         self._auto_save()
 
+    # ---- model registry: auto-refresh, import, update check -------------
+    def _download_proxy(self) -> str:
+        return self._current_settings.get("download_proxy", "system")
+
+    def start_registry_refresh(self):
+        """Fetch the latest registry in the background (offline-safe)."""
+        proxy = self._download_proxy()
+
+        def work():
+            ok = asr_registry.refresh_remote(proxy)
+            self._registry_refreshed.emit(ok)
+
+        threading.Thread(target=work, daemon=True, name="RegistryRefresh").start()
+
+    def _on_registry_refreshed(self, ok: bool):
+        if ok:
+            self._reload_model_lists()
+
+    def _reload_model_lists(self):
+        """Rebuild model tables and refresh the Whisper / FunASR combos."""
+        reload_registry(self._current_settings.get("custom_asr_models"))
+        current = self._selected_whisper_model()
+        self._whisper_size_combo.blockSignals(True)
+        self._populate_whisper_models(current)
+        self._whisper_size_combo.blockSignals(False)
+        funasr_current = self._selected_funasr_model()
+        self._funasr_model_combo.blockSignals(True)
+        self._funasr_model_combo.clear()
+        for key, display_name in funasr_model_options():
+            self._funasr_model_combo.addItem(display_name, key)
+        idx = self._funasr_model_combo.findData(funasr_current)
+        self._funasr_model_combo.setCurrentIndex(max(idx, 0))
+        self._funasr_model_combo.blockSignals(False)
+        self._update_whisper_size_label()
+
+    def _add_custom_entry(self, entry: dict):
+        entries = [
+            e
+            for e in self._current_settings.get("custom_asr_models", [])
+            if isinstance(e, dict)
+        ]
+        ident = entry.get("repo") or entry.get("key") or entry.get("path")
+        entries = [
+            e for e in entries if (e.get("repo") or e.get("key") or e.get("path")) != ident
+        ]
+        entries.append(entry)
+        self._current_settings["custom_asr_models"] = entries
+        _save_settings(self._current_settings)
+
+    def _import_hf_model(self, preset: str = ""):
+        text, ok = QInputDialog.getText(
+            self, t("import_hf_title"), t("import_hf_prompt"), text=preset or ""
+        )
+        if not ok or not text.strip():
+            return
+        self._import_hf_btn.setEnabled(False)
+        self._import_hf_btn.setText(t("import_checking"))
+        proxy = self._download_proxy()
+
+        def work():
+            self._hf_inspected.emit(asr_registry.inspect_hf_repo(text, proxy))
+
+        threading.Thread(target=work, daemon=True, name="HFInspect").start()
+
+    def _on_hf_inspected(self, result: dict):
+        self._import_hf_btn.setEnabled(True)
+        self._import_hf_btn.setText(t("btn_import_hf"))
+        if "error" in result:
+            msg = t("import_err_" + result["error"])
+            detail = result.get("detail")
+            QMessageBox.warning(
+                self, t("import_hf_title"), f"{msg}\n{detail}" if detail else msg
+            )
+            return
+        entry = asr_registry.make_custom_entry(result)
+        if not entry:
+            QMessageBox.warning(self, t("import_hf_title"), t("import_err_unsupported"))
+            return
+        self._add_custom_entry(entry)
+        self._reload_model_lists()
+        key = entry.get("repo")
+        if entry["kind"] == "funasr":
+            idx = self._funasr_model_combo.findData(entry["key"])
+            if idx >= 0:
+                self._funasr_model_combo.setCurrentIndex(idx)
+                self._asr_engine.setCurrentIndex(1)
+        else:
+            idx = self._whisper_size_combo.findData(key)
+            if idx >= 0:
+                self._asr_engine.setCurrentIndex(0)
+                self._whisper_size_combo.setCurrentIndex(idx)
+        QMessageBox.information(
+            self,
+            t("import_hf_title"),
+            t("import_ok").format(repo=result["repo"], kind=entry["kind"]),
+        )
+
+    def _import_onnx_model(self):
+        box = QMessageBox(self)
+        box.setWindowTitle(t("btn_import_onnx"))
+        box.setText(t("onnx_pick_prompt"))
+        folder_btn = box.addButton(t("onnx_pick_folder"), QMessageBox.ButtonRole.AcceptRole)
+        file_btn = box.addButton(t("onnx_pick_file"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is folder_btn:
+            path = QFileDialog.getExistingDirectory(self, t("btn_import_onnx"))
+        elif clicked is file_btn:
+            path, _ = QFileDialog.getOpenFileName(
+                self, t("btn_import_onnx"), "", "ONNX (*.onnx)"
+            )
+        else:
+            return
+        if not path:
+            return
+        from asr_onnx import describe_onnx_error
+
+        resolved = resolve_custom_whisper_model(path)
+        if not resolved:
+            QMessageBox.warning(
+                self,
+                t("btn_import_onnx"),
+                t("onnx_unsupported") + "\n" + t("onnx_err_" + describe_onnx_error(path)),
+            )
+            return
+        self._add_custom_entry(
+            {"kind": "onnx", "path": resolved, "name": Path(resolved).name}
+        )
+        self._reload_model_lists()
+        idx = self._whisper_size_combo.findData(resolved)
+        if idx >= 0:
+            self._asr_engine.setCurrentIndex(0)
+            self._whisper_size_combo.setCurrentIndex(idx)
+        QMessageBox.information(
+            self, t("btn_import_onnx"), t("onnx_added").format(path=resolved)
+        )
+
+    def _check_model_updates(self):
+        self._check_models_btn.setEnabled(False)
+        self._check_models_btn.setText(t("import_checking"))
+        proxy = self._download_proxy()
+
+        def work():
+            asr_registry.refresh_remote(proxy)
+            reg = asr_registry.load_registry(
+                self._current_settings.get("custom_asr_models")
+            )
+            self._variants_found.emit(
+                asr_registry.find_newer_variants(reg, proxy=proxy)
+            )
+
+        threading.Thread(target=work, daemon=True, name="ModelUpdateCheck").start()
+
+    def _on_variants_found(self, found: list):
+        self._check_models_btn.setEnabled(True)
+        self._check_models_btn.setText(t("btn_check_models"))
+        self._reload_model_lists()
+        if not found:
+            QMessageBox.information(self, t("btn_check_models"), t("update_none"))
+            return
+        labels = [f"{f['repo']}  ({f['downloads']:,} downloads)" for f in found]
+        choice, ok = QInputDialog.getItem(
+            self, t("btn_check_models"), t("update_found_prompt"), labels, 0, False
+        )
+        if ok and choice:
+            self._import_hf_model(choice.split()[0])
+
     def _selected_whisper_model(self) -> str:
         value = self._whisper_size_combo.currentData()
         return str(value) if value else self._whisper_size_combo.currentText()
@@ -1152,7 +1379,7 @@ class ControlPanel(QWidget):
     def _populate_whisper_models(self, saved_value: str):
         self._whisper_size_combo.clear()
         for size in _WHISPER_SIZES:
-            self._whisper_size_combo.addItem(size, size)
+            self._whisper_size_combo.addItem(whisper_display_name(size), size)
 
         local_prefix = t("whisper_local_prefix")
         for item in list_local_faster_whisper_models():
@@ -1162,6 +1389,20 @@ class ControlPanel(QWidget):
             )
             self._whisper_size_combo.setItemData(
                 idx, item["path"], Qt.ItemDataRole.ToolTipRole
+            )
+
+        for item in asr_registry.custom_onnx_entries(
+            self._current_settings.get("custom_asr_models")
+        ):
+            resolved = resolve_custom_whisper_model(item["path"])
+            if not resolved or self._whisper_size_combo.findData(resolved) >= 0:
+                continue
+            idx = self._whisper_size_combo.count()
+            self._whisper_size_combo.addItem(
+                f"{local_prefix}: ONNX {item['name'] or Path(resolved).name}", resolved
+            )
+            self._whisper_size_combo.setItemData(
+                idx, resolved, Qt.ItemDataRole.ToolTipRole
             )
 
         selected = resolve_custom_whisper_model(saved_value) or saved_value
@@ -1179,7 +1420,7 @@ class ControlPanel(QWidget):
             self._whisper_size_combo.setCurrentIndex(idx)
 
     def _update_whisper_size_label(self):
-        from model_manager import is_asr_cached, _MODEL_SIZE_BYTES
+        from model_manager import is_asr_cached
 
         size = self._selected_whisper_model()
         cached = is_asr_cached("whisper", size, self._current_settings.get("hub", "ms"))
@@ -1197,7 +1438,7 @@ class ControlPanel(QWidget):
             self._whisper_status.setStyleSheet("color: #4a4; font-size: 11px;")
             self._whisper_dl_btn.setEnabled(False)
         else:
-            est = _MODEL_SIZE_BYTES.get(f"whisper-{size}", 0)
+            est = whisper_estimated_bytes(size)
             self._whisper_status.setText(f"~{format_size(est)}")
             self._whisper_status.setStyleSheet("color: #888; font-size: 11px;")
             self._whisper_dl_btn.setEnabled(True)
@@ -1458,6 +1699,8 @@ class ControlPanel(QWidget):
         self._current_settings["whisper_model_size"] = (
             self._selected_whisper_model()
         )
+        if hasattr(self, "_compute_combo"):
+            self._current_settings["compute_type"] = self._compute_combo.currentData()
         dev_text = self._asr_device.currentText()
         self._current_settings["asr_device"] = dev_text.split(" (")[0]
         audio_idx = self._audio_device.currentIndex()

@@ -13,7 +13,7 @@ class AnimeWhisperEngine:
     Loaded via transformers pipeline; no faster-whisper / ctranslate2 path.
     """
 
-    def __init__(self, device="cuda", hub="hf"):
+    def __init__(self, device="cuda", hub="hf", model_id=None, language="ja", compute_type="auto"):
         import torch
         from transformers import pipeline
         from model_manager import get_local_model_path
@@ -22,10 +22,26 @@ class AnimeWhisperEngine:
             log.warning("CUDA not available, falling back to CPU")
             device = "cpu"
 
-        local = get_local_model_path("anime-whisper", hub=hub)
-        model = local or MODEL_ID
+        # model_id: any transformers Whisper-arch HF repo (registry entry);
+        # None keeps the original anime-whisper behaviour.
+        if model_id:
+            from model_manager import get_hf_snapshot_path
 
-        dtype = torch.float16 if device.startswith("cuda") else torch.float32
+            local = get_hf_snapshot_path(model_id)
+        else:
+            local = get_local_model_path("anime-whisper", hub=hub)
+        model = local or model_id or MODEL_ID
+        self._lang_locked = language == "ja"
+
+        from asr_precision import cuda_capability, resolve_torch_dtype
+
+        idx = int(device.split(":")[1]) if ":" in device else 0
+        dtype_name = resolve_torch_dtype(
+            compute_type, device, cuda_capability(idx) if device != "cpu" else None
+        )
+        dtype = getattr(torch, dtype_name)
+        self._dtype_name = dtype_name
+        self._compute_type = compute_type
         self._device = device
         self._pipe = pipeline(
             "automatic-speech-recognition",
@@ -35,14 +51,22 @@ class AnimeWhisperEngine:
             chunk_length_s=30.0,
             batch_size=1,
         )
-        self.language = "ja"
-        log.info(f"AnimeWhisper loaded from {model} on {device}")
+        self.language = "ja" if self._lang_locked else None
+        log.info(f"AnimeWhisper loaded from {model} on {device} ({dtype_name})")
 
     def set_language(self, language: str):
-        # Model is Japanese-only; ignore attempts to change
-        if language not in ("auto", "ja", None):
-            log.info(f"AnimeWhisper is Japanese-only, ignoring language={language}")
-        self.language = "ja"
+        if self._lang_locked:
+            # Japanese-only model; ignore attempts to change
+            if language not in ("auto", "ja", None):
+                log.info(f"AnimeWhisper is Japanese-only, ignoring language={language}")
+            self.language = "ja"
+        else:
+            self.language = None if language in ("auto", None) else language
+
+    def _lang_name(self) -> str:
+        if self.language == "ja":
+            return "Japanese"
+        return self.language
 
     def to_device(self, device: str):
         try:
@@ -52,7 +76,13 @@ class AnimeWhisperEngine:
             if device == "cpu":
                 model.to("cpu", dtype=torch.float32)
             else:
-                model.to(device, dtype=torch.float16)
+                from asr_precision import cuda_capability, resolve_torch_dtype
+
+                idx = int(device.split(":")[1]) if ":" in device else 0
+                self._dtype_name = resolve_torch_dtype(
+                    self._compute_type, device, cuda_capability(idx)
+                )
+                model.to(device, dtype=getattr(torch, self._dtype_name))
             self._pipe.device = model.device
             self._device = device
             log.info(f"AnimeWhisper moved to {device}")
@@ -81,7 +111,7 @@ class AnimeWhisperEngine:
             result = self._pipe(
                 audio,
                 generate_kwargs={
-                    "language": "Japanese",
+                    **({"language": self._lang_name()} if self.language else {}),
                     "task": "transcribe",
                     "do_sample": False,
                     "num_beams": 1,
@@ -96,6 +126,6 @@ class AnimeWhisperEngine:
 
         return {
             "text": text,
-            "language": "ja",
-            "language_name": "ja",
+            "language": self.language or "auto",
+            "language_name": self.language or "auto",
         }

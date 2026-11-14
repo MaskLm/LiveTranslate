@@ -51,10 +51,62 @@ def _parse_device(device: str) -> tuple[str, int]:
     return device, 0
 
 
+def _non_ct2_whisper(model_size: str) -> bool:
+    """True for transformers-Whisper registry keys and ONNX model paths."""
+    from model_manager import is_faster_whisper_model_dir, whisper_kind
+
+    if whisper_kind(model_size) is not None:
+        return whisper_kind(model_size) != "ct2"
+    return not is_faster_whisper_model_dir(model_size)
+
+
+def _load_non_ct2_whisper(
+    model_size, parsed_device, device_index, hub, language, compute_type="auto"
+):
+    from model_manager import (
+        ONNX_MODELS,
+        TRANSFORMERS_WHISPER_MODELS,
+        get_hf_snapshot_path,
+        is_onnx_model_path,
+    )
+
+    entry = TRANSFORMERS_WHISPER_MODELS.get(model_size)
+    if entry:
+        from asr_anime_whisper import AnimeWhisperEngine
+
+        worker_device = parsed_device if parsed_device == "cpu" else f"cuda:{device_index}"
+        return AnimeWhisperEngine(
+            device=worker_device,
+            hub=hub,
+            model_id=entry["repo"],
+            language=entry.get("language", ""),
+            compute_type=compute_type,
+        )
+    onnx_entry = ONNX_MODELS.get(model_size)
+    if onnx_entry:
+        from asr_onnx import OnnxEngine
+
+        path = get_hf_snapshot_path(onnx_entry["repo"])
+        if not path:
+            raise FileNotFoundError(f"ONNX model not downloaded: {onnx_entry['repo']}")
+        return OnnxEngine(
+            path,
+            language=language,
+            model_type=onnx_entry["onnx_type"],
+            compute_type=compute_type,
+        )
+    if is_onnx_model_path(model_size):
+        from asr_onnx import OnnxEngine
+
+        return OnnxEngine(model_size, language=language, compute_type=compute_type)
+    raise ValueError(f"Unsupported ASR model: {model_size}")
+
+
 def _load_engine(config: dict):
-    from model_manager import MODELS_DIR, apply_cache_env
+    from model_manager import MODELS_DIR, apply_cache_env, reload_registry
 
     apply_cache_env()
+    reload_registry()
 
     engine_type = config["engine_type"]
     device = config.get("device", "cpu")
@@ -72,18 +124,48 @@ def _load_engine(config: dict):
             device=device,
             hub=hub,
             pad_seconds=pad_seconds,
+            compute_type=config.get("torch_dtype", "auto"),
         )
     elif engine_type == "anime-whisper":
         from asr_anime_whisper import AnimeWhisperEngine
 
         worker_device = parsed_device if parsed_device == "cpu" else f"cuda:{device_index}"
-        engine = AnimeWhisperEngine(device=worker_device, hub=hub)
+        engine = AnimeWhisperEngine(
+            device=worker_device, hub=hub, compute_type=config.get("torch_dtype", "auto")
+        )
+    elif engine_type == "whisper" and _non_ct2_whisper(config["model_size"]):
+        engine = _load_non_ct2_whisper(
+            config["model_size"],
+            parsed_device,
+            device_index,
+            hub,
+            language,
+            config.get("torch_dtype", "auto"),
+        )
     else:
         from asr_engine import ASREngine
 
-        compute_type = config.get("compute_type", "float16")
-        if parsed_device == "cpu" and compute_type == "float16":
-            compute_type = "int8"
+        from asr_precision import (
+            cuda_capability,
+            ct2_supported_types,
+            resolve_ct2_compute_type,
+        )
+        from model_manager import WHISPER_MODELS
+
+        recommended = (WHISPER_MODELS.get(config["model_size"]) or {}).get(
+            "compute_type"
+        )
+        compute_type, warning = resolve_ct2_compute_type(
+            config.get("compute_type", "auto"),
+            parsed_device,
+            supported=ct2_supported_types(parsed_device, device_index),
+            capability=cuda_capability(device_index)
+            if parsed_device != "cpu"
+            else None,
+            recommended=recommended,
+        )
+        if warning:
+            log.warning(f"Compute type: {warning}")
         download_root = config.get("download_root")
         if not download_root:
             download_root = str((MODELS_DIR / "huggingface" / "hub").resolve())
