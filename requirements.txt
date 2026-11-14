@@ -47,3 +47,4 @@ PyQt6>=6.5.0
 
 # ONNX ASR backend (asr_onnx.py)
 sherpa-onnx>=1.10.0
+anthropic>=2.8.0

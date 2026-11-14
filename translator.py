@@ -5,6 +5,13 @@ import time
 import httpx
 from openai import OpenAI
 
+import translator_anthropic as tla
+from translator_anthropic import (  # noqa: F401  (re-exported for callers)
+    TranslationAPIError,
+    TranslationRefusedError,
+    resolve_api_format,
+)
+
 log = logging.getLogger("LiveTranslate.TL")
 
 LANGUAGE_DISPLAY = {
@@ -138,7 +145,8 @@ _OVERRIDE_KEYS = (
 #   vllm:     self-hosted vLLM/SGLang (chat template kwarg)
 #   openai:   OpenAI GPT-5.1+/Grok 4.3+ (reasoning_effort=none)
 #   off:      send nothing (non-thinking models, LM Studio, Ollama /v1)
-THINKING_STYLES = ("auto", "deepseek", "qwen", "vllm", "openai", "off")
+#   anthropic: native Claude API only - "no thinking" (Sonnet 5.5 between_tools)
+THINKING_STYLES = ("auto", "deepseek", "qwen", "vllm", "openai", "off", "anthropic")
 
 _NESTED_THINKING_MODELS = ("deepseek", "glm")
 _NESTED_THINKING_ENDPOINTS = ("deepseek", "volces", "api.z.ai", "bigmodel")
@@ -198,8 +206,18 @@ class Translator:
         overrides=None,
         extra_body=None,
         thinking_style=None,
+        api_format="auto",
+        anthropic_fallbacks=True,
     ):
-        self._client = make_openai_client(api_base, api_key, proxy, timeout=timeout)
+        self._api_format = resolve_api_format(api_format, api_base)
+        self._api_base = api_base
+        self._anthropic_fallbacks = bool(anthropic_fallbacks)
+        if self._api_format == "anthropic":
+            self._client = tla.make_anthropic_client(
+                api_base, api_key, proxy, timeout=timeout
+            )
+        else:
+            self._client = make_openai_client(api_base, api_key, proxy, timeout=timeout)
         self._no_system_role = no_system_role
         if thinking_style is None:
             # Legacy configs only carry the no_think bool
@@ -208,7 +226,8 @@ class Translator:
             thinking_style, api_base, model
         )
         self._json_response = json_response
-        if self._thinking_style != "off":
+        self._thinking_style_raw = thinking_style
+        if self._api_format != "anthropic" and self._thinking_style != "off":
             log.info(
                 f"Translator: thinking disabled for {model} via "
                 f"{self._thinking_style} style "
@@ -228,6 +247,12 @@ class Translator:
             log.info(f"Translator overrides: {self._overrides}")
         if self._extra_body:
             log.info(f"Translator extra_body: {self._extra_body}")
+        if self._api_format == "anthropic":
+            _, dropped = tla.strip_sampling({**self._overrides, **self._extra_body})
+            log.info(
+                f"Translator: using native Anthropic Messages API for {model}"
+                + (f"; dropping unsupported params {sorted(set(dropped))}" if dropped else "")
+            )
         self._system_prompt_template = system_prompt or DEFAULT_PROMPT
         self._context_turns = 0
         self._history = []  # list of (source_text, translated_text)
@@ -268,6 +293,10 @@ class Translator:
         """Create a new Translator with a different target language, sharing the same client."""
         t = Translator.__new__(Translator)
         t._client = self._client
+        t._api_format = self._api_format
+        t._api_base = self._api_base
+        t._anthropic_fallbacks = self._anthropic_fallbacks
+        t._thinking_style_raw = self._thinking_style_raw
         t._no_system_role = self._no_system_role
         t._thinking_style = self._thinking_style
         t._json_response = self._json_response
@@ -385,6 +414,19 @@ class Translator:
             yield result
             return
 
+        if self._api_format == "anthropic":
+            prev = None
+            for partial in self._anthropic_stream_iter(system_prompt, text):
+                if prev is not None:
+                    yield prev
+                prev = partial
+            result = prev or ""
+            if self._check_repetition(result):
+                raise RepetitionError(result)
+            self._append_history(text, result)
+            yield result
+            return
+
         # Streaming path
         self._last_prompt_tokens = 0
         self._last_completion_tokens = 0
@@ -454,6 +496,8 @@ class Translator:
         return False
 
     def _translate_sync(self, system_prompt, text):
+        if self._api_format == "anthropic":
+            return self._anthropic_sync(system_prompt, text)
         kwargs = self._build_request_kwargs(system_prompt, text, stream=False)
         resp = self._client.chat.completions.create(**kwargs)
         self._last_prompt_tokens = 0
@@ -468,6 +512,11 @@ class Translator:
         return result
 
     def _translate_streaming(self, system_prompt, text):
+        if self._api_format == "anthropic":
+            result = ""
+            for result in self._anthropic_stream_iter(system_prompt, text):
+                pass
+            return result
         self._last_prompt_tokens = 0
         self._last_completion_tokens = 0
         base_kwargs = self._build_request_kwargs(system_prompt, text, stream=True)
@@ -499,3 +548,80 @@ class Translator:
             result = self._extract_json_translation(result)
         self._warn_if_thinking_burned(result)
         return result
+
+    # ------------------------------------------------------------------
+    # Native Anthropic (Claude) Messages API path
+    # ------------------------------------------------------------------
+    def _build_anthropic_request(self, system_prompt, text):
+        history = ()
+        if (
+            self._context_turns > 0
+            and self._history
+            and "{context}" not in self._system_prompt_template
+        ):
+            history = self._history[-self._context_turns:]
+        kwargs, use_beta = tla.build_request(
+            model=self._model,
+            system_prompt=system_prompt,
+            text=text,
+            history=history,
+            api_base=self._api_base,
+            overrides=self._overrides,
+            extra_body=self._extra_body,
+            thinking_style=self._thinking_style_raw,
+            json_response=self._json_response,
+            fallbacks=self._anthropic_fallbacks,
+        )
+        endpoint = self._client.beta.messages if use_beta else self._client.messages
+        return endpoint, kwargs
+
+    def _set_usage(self, usage):
+        self._last_prompt_tokens, self._last_completion_tokens = tla.usage_tokens(usage)
+
+    def _anthropic_sync(self, system_prompt, text):
+        self._last_prompt_tokens = 0
+        self._last_completion_tokens = 0
+        endpoint, kwargs = self._build_anthropic_request(system_prompt, text)
+        try:
+            resp = endpoint.create(**kwargs)
+        except Exception as e:
+            mapped = tla.map_anthropic_error(e)
+            if mapped is e:
+                raise
+            raise mapped from e
+        self._set_usage(getattr(resp, "usage", None))
+        tla.check_stop_reason(resp, self._model)
+        result = tla.extract_text(resp.content).strip()
+        if self._json_response:
+            result = self._extract_json_translation(result)
+        return result
+
+    def _anthropic_stream_iter(self, system_prompt, text):
+        """Yield accumulated partial text, then the final result (no history)."""
+        self._last_prompt_tokens = 0
+        self._last_completion_tokens = 0
+        endpoint, kwargs = self._build_anthropic_request(system_prompt, text)
+        deadline = time.monotonic() + self._timeout
+        chunks = []
+        try:
+            with endpoint.stream(**kwargs) as stream:
+                for piece in stream.text_stream:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(
+                            f"Translation exceeded {self._timeout}s total timeout"
+                        )
+                    chunks.append(piece)
+                    if not self._json_response:
+                        yield "".join(chunks)
+                final = stream.get_final_message()
+        except Exception as e:
+            mapped = tla.map_anthropic_error(e)
+            if mapped is e:
+                raise
+            raise mapped from e
+        self._set_usage(getattr(final, "usage", None))
+        tla.check_stop_reason(final, self._model)
+        result = (tla.extract_text(final.content) or "".join(chunks)).strip()
+        if self._json_response:
+            result = self._extract_json_translation(result)
+        yield result

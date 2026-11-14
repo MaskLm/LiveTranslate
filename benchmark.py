@@ -3,6 +3,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import translator_anthropic as tla
 from translator import make_openai_client
 
 BENCH_SENTENCES = {
@@ -51,6 +52,38 @@ BENCH_SENTENCES = {
 }
 
 
+def _anthropic_round(client, m, prompt, text):
+    """One timed Anthropic request: (ttft_ms, total_ms, text). Streams, then
+    falls back to a blocking call if streaming itself fails (mirrors OpenAI path)."""
+    kwargs, use_beta = tla.build_request(
+        model=m["model"],
+        system_prompt=prompt,
+        text=text,
+        api_base=m["api_base"],
+        overrides=m.get("overrides"),
+        extra_body=m.get("extra_body"),
+        thinking_style=m.get("thinking_style"),
+        fallbacks=m.get("anthropic_fallbacks", True),
+    )
+    endpoint = client.beta.messages if use_beta else client.messages
+    try:
+        t0 = time.perf_counter()
+        ttft = None
+        with endpoint.stream(**kwargs) as stream:
+            for _piece in stream.text_stream:
+                if ttft is None:
+                    ttft = (time.perf_counter() - t0) * 1000
+            final = stream.get_final_message()
+        total_ms = (time.perf_counter() - t0) * 1000
+    except Exception:
+        t0 = time.perf_counter()
+        final = endpoint.create(**kwargs)
+        total_ms = (time.perf_counter() - t0) * 1000
+        ttft = None
+    tla.check_stop_reason(final, m["model"])
+    return ttft or total_ms, total_ms, tla.extract_text(final.content).strip()
+
+
 def run_benchmark(models, source_lang, target_lang, timeout_s, prompt, result_callback):
     """Run benchmark in a background thread. Calls result_callback(str) for each output line."""
     sentences = BENCH_SENTENCES.get(source_lang, BENCH_SENTENCES["en"])
@@ -66,7 +99,11 @@ def run_benchmark(models, source_lang, target_lang, timeout_s, prompt, result_ca
         name = m["name"]
         lines = [f"Model: {name}", f"  {'─' * 50}"]
         try:
-            client = make_openai_client(
+            is_anthropic = (
+                tla.resolve_api_format(m.get("api_format"), m["api_base"]) == "anthropic"
+            )
+            make_client = tla.make_anthropic_client if is_anthropic else make_openai_client
+            client = make_client(
                 m["api_base"],
                 m["api_key"],
                 proxy=m.get("proxy", "none"),
@@ -76,6 +113,17 @@ def run_benchmark(models, source_lang, target_lang, timeout_s, prompt, result_ca
             totals = []
 
             for i, text in enumerate(sentences):
+                if is_anthropic:
+                    ttft, total_ms, result_text = _anthropic_round(
+                        client, m, prompt, text
+                    )
+                    ttfts.append(ttft)
+                    totals.append(total_ms)
+                    lines.append(
+                        f"  Round {i + 1}: {total_ms:7.0f}ms "
+                        f"(TTFT {ttft:6.0f}ms) | {result_text[:60]}"
+                    )
+                    continue
                 if m.get("no_system_role"):
                     messages = [{"role": "user", "content": f"{prompt}\n{text}"}]
                 else:
@@ -143,6 +191,7 @@ def run_benchmark(models, source_lang, target_lang, timeout_s, prompt, result_ca
             }
 
         except Exception as e:
+            e = tla.map_anthropic_error(e)
             err_msg = str(e).split("\n")[0][:120]
             lines.append(f"  FAILED: {err_msg}")
             result_callback("\n".join(lines))
