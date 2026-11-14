@@ -28,6 +28,7 @@ Works with any system audio — videos, livestreams, voice chat. No player modif
 - **Per-model settings**: Streaming, structured output (JSON), context history, disable thinking
 - **Microphone mix-in**: Optionally mix microphone input with system audio for ASR
 - **Low-latency VAD**: 32ms chunks + Silero VAD with adaptive silence detection
+- **Japanese furigana**: hiragana readings above kanji (or inline) in the recognized Japanese text, in the overlay and the OBS subtitle window
 - **Transparent overlay**: Always-on-top, click-through, draggable, 14 color themes
 - **CUDA acceleration**: GPU-accelerated ASR inference
 - **Auto model management**: Setup wizard, ModelScope / HuggingFace dual sources

@@ -25,7 +25,7 @@ MUST_IMPORT = ["numpy", "yaml", "openai", "anthropic", "httpx", "psutil",
                "omegaconf", "hydra", "kaldiio", "jaconv", "jamo", "huggingface_hub",
                "sherpa_onnx", "jieba", "llvmlite.binding", "numba",
                "PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets",
-               "yasbd", "cuda_env", "i18n"]
+               "yasbd", "fugashi", "unidic_lite", "furigana", "cuda_env", "i18n"]
 if sys.platform == "win32":
     MUST_IMPORT.append("pyaudiowpatch")
 # These import torch at module level; torch is installed on first run only.
@@ -224,7 +224,18 @@ def check_transformers_core_deps():
 check("transformers core deps", check_transformers_core_deps)
 check("app PyQt6 imports", check_app_qt_imports)
 check("Qt offscreen runtime (widget/painter/icon/plugins)", check_qt_runtime)
+def check_furigana():
+    import furigana
+    segs = furigana.annotate("今日は東京で日本語を勉強します")
+    readings = [s.reading for s in segs if s.reading]
+    if "".join(s.surface for s in segs) != "今日は東京で日本語を勉強します":
+        raise RuntimeError(f"furigana changed the text: {segs}")
+    if not readings or "とうきょう" not in readings:
+        raise RuntimeError(f"furigana readings missing/wrong: {segs}")
+
+
 check("jieba cut", check_jieba)
+check("furigana (fugashi + unidic-lite)", check_furigana)
 check("numba njit (llvmlite)", check_numba)
 check("scipy.signal + sklearn", check_scipy_sklearn)
 check("av/ctranslate2/sherpa_onnx", check_native_libs)

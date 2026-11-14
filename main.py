@@ -288,6 +288,11 @@ class LiveTranslateApp:
         self._vad.update_settings(settings)
         if "style" in settings and self._overlay:
             self._overlay.apply_style(settings["style"])
+        if any(k.startswith("furigana_") for k in settings):
+            if self._overlay:
+                self._overlay.set_furigana(settings)
+            if self._subwin:
+                self._subwin.set_furigana(settings)
         if "asr_language" in settings:
             self._set_asr_language(settings["asr_language"])
         if "sensevoice_pad_seconds" in settings:
@@ -1118,7 +1123,7 @@ class LiveTranslateApp:
                 tl_dict = {self._target_language: translated}
                 if extra_langs:
                     self._translate_extra_langs(text, source_lang, extra_langs, tl_dict)
-                self._subwin.update_text(text, tl_dict)
+                self._subwin.update_text(text, tl_dict, source_lang)
         except RepetitionError:
             log.warning("Repetition loop detected, model may not support structured output well")
             self._transcript.finalize_no_translation(msg_id)
@@ -1181,7 +1186,7 @@ class LiveTranslateApp:
         tl_dict = {self._target_language: text}  # same language, use original
         self._translate_extra_langs(text, source_lang, extra_langs, tl_dict)
         if self._subwin and self._subwin.isVisible():
-            self._subwin.update_text(text, tl_dict)
+            self._subwin.update_text(text, tl_dict, source_lang)
 
     def start(self):
         if self._running:
@@ -1361,7 +1366,7 @@ class LiveTranslateApp:
                     except RuntimeError:
                         pass
                 else:
-                    self._subwin.update_text(original_text, {target_lang: original_text})
+                    self._subwin.update_text(original_text, {target_lang: original_text}, source_lang)
         else:
             try:
                 self._tl_executor.submit(
@@ -1589,7 +1594,7 @@ class LiveTranslateApp:
                     except RuntimeError:
                         pass
                 else:
-                    self._subwin.update_text(original_text, {target_lang: original_text})
+                    self._subwin.update_text(original_text, {target_lang: original_text}, source_lang)
         else:
             try:
                 self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None)
@@ -1905,6 +1910,8 @@ def main():
         style = panel.get_settings().get("style")
         if style:
             overlay.apply_style(style)
+        overlay.set_furigana(panel.get_settings())
+        subwin.set_furigana(panel.get_settings())
         active_model = panel.get_active_model()
         if active_model:
             live_trans._on_model_changed(active_model)

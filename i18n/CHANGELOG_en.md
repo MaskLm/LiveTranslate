@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-11-14
+- New Japanese furigana: hiragana readings can be shown above kanji in the recognized (original) text of Japanese speech, in the overlay and in the OBS subtitle window (Style tab → Furigana). Readings come from context-aware MeCab analysis (fugashi + unidic-lite) with okurigana split correctly (食べる → 食[た]べる); choose reading above kanji (ruby) or inline in parentheses, reading size, and where it applies. Computed off the UI thread, never recomputed while translation streams
 - ASR model list expanded: Whisper engine now offers large-v3-turbo, distil-large-v3.5 (English), kotoba-whisper v2.0 / v2.2 (Japanese, CTranslate2), anime-whisper CT2 (fp16) and the official kotoba-whisper-v2.2 (transformers); new ONNX int8 models (SenseVoice, Paraformer-zh, Whisper small/turbo) via sherpa-onnx
 - Model list is now data-driven (`asr_registry.json`) and refreshes from the GitHub repo in the background (cached, offline-safe, honors download proxy); new "Check for new models" button searches Hugging Face for new variants — nothing is downloaded until you click Download
 - New "Import HF model..." (paste a URL or repo id; backend auto-detected: CTranslate2 / transformers Whisper / SenseVoice FunASR) and "Import ONNX..." (local sherpa-onnx folder or file) buttons; custom entries are saved in user_settings.json

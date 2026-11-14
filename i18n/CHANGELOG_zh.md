@@ -1,6 +1,7 @@
 # 更新日志
 
 ## 2026-11-14
+- 新增日语振假名: 日语语音识别的原文可在汉字上方显示平假名读音, 支持悬浮窗与 OBS 字幕窗口 (样式标签页 → 振假名)。读音由 fugashi + unidic-lite 结合上下文分析得出, 正确切分送假名 (食べる → 食[た]べる); 可选汉字上方注音或括号内联、读音大小及生效位置。在 UI 线程之外计算, 译文流式更新时不会重复计算
 - 扩充 ASR 模型列表: Whisper 引擎新增 large-v3-turbo、distil-large-v3.5 (英语)、kotoba-whisper v2.0 / v2.2 (日语, CTranslate2)、anime-whisper CT2 (fp16) 以及官方 kotoba-whisper-v2.2 (transformers); 通过 sherpa-onnx 新增 ONNX int8 模型 (SenseVoice、Paraformer-zh、Whisper small/turbo)
 - 模型列表改为数据驱动 (`asr_registry.json`), 后台自动从 GitHub 仓库刷新 (本地缓存、离线可用、遵循下载代理); 新增「检查新模型」按钮, 在 Hugging Face 搜索新变体 — 点击「下载」前不会下载任何内容
 - 新增「导入 HF 模型...」(粘贴链接或仓库 ID, 自动识别 CTranslate2 / transformers Whisper / SenseVoice FunASR) 和「导入 ONNX...」(本地 sherpa-onnx 文件夹或文件); 自定义条目保存在 user_settings.json

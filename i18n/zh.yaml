@@ -74,6 +74,17 @@ label_timestamp_color: "时间戳颜色:"
 group_window: "窗口"
 label_window_opacity: "窗口透明度:"
 
+group_furigana: "振假名 (日语)"
+furigana_enable: "在日语原文的汉字上方显示振假名 (读音)"
+furigana_enable_tip: "基于 fugashi + unidic-lite, 仅当识别语言为日语时生效"
+label_furigana_mode: "读音样式:"
+furigana_mode_ruby: "汉字上方 (注音)"
+furigana_mode_paren: "括号内联"
+label_furigana_scale: "读音大小:"
+furigana_scale_tip: "读音字号相对正文的比例"
+furigana_in_overlay: "悬浮窗原文"
+furigana_in_subtitle: "字幕窗口原文行"
+
 # VAD / ASR 标签页
 group_asr_engine: "ASR 引擎"
 label_engine: "引擎:"

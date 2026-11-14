@@ -14,6 +14,7 @@ from pathlib import Path
 
 import json
 
+import furigana
 from PyQt6.QtCore import (
     Qt, QPoint, QRect, pyqtSignal, pyqtSlot, pyqtProperty,
     QPropertyAnimation, QParallelAnimationGroup, QEasingCurve, QTimer,
@@ -128,6 +129,9 @@ class _SubtitleTextWidget(QWidget):
         super().__init__(parent)
         self._text = ""
         self._wrapped_lines = []
+        self._segments = None  # furigana segments (ruby mode) or None
+        self._ruby_lines = []  # wrapped lines of furigana.Segment when ruby is active
+        self._furi_scale = 0.5
         self._font = QFont("Microsoft YaHei", 24)
         self._color = QColor(255, 255, 255)
         self._outline_enabled = True
@@ -148,6 +152,7 @@ class _SubtitleTextWidget(QWidget):
         self._animation_duration = 300
         self._anim_group = None
         self._pending_text = None
+        self._pending_segments = None
 
     # --- pyqtProperty for content opacity ---
     def _get_content_opacity(self):
@@ -196,29 +201,42 @@ class _SubtitleTextWidget(QWidget):
         self._update_height()
         self.update()
 
-    def set_text(self, text: str):
+    def set_furigana_scale(self, scale: float):
+        self._furi_scale = scale
+        self._text_cache = None
+        self._update_height()
+
+    def set_text(self, text: str, segments=None):
+        """`segments`: furigana.Segment list (ruby mode) describing `text`, or None."""
+        if segments is not None:
+            segments = list(segments)
         if self._text and text != self._text and self._exit_animation != "none":
             self._pending_text = text
+            self._pending_segments = segments
             self._stop_all_animations()
             self.animate_out(callback=self._apply_pending_text)
             return
 
-        self._apply_text_immediate(text)
+        self._apply_text_immediate(text, segments)
 
     def _apply_pending_text(self):
         text = getattr(self, "_pending_text", "")
+        segments = self._pending_segments
         self._pending_text = None
-        self._apply_text_immediate(text)
+        self._pending_segments = None
+        self._apply_text_immediate(text, segments)
 
-    def _apply_text_immediate(self, text: str):
+    def _apply_text_immediate(self, text: str, segments=None):
         # Stop any running animations and reset to final state
         self._stop_all_animations()
         self._content_opacity_val = 1.0
         self._slide_offset_x_val = 0.0
         self._slide_offset_y_val = 0.0
         self._pending_text = None
+        self._pending_segments = None
 
         self._text = text
+        self._segments = segments
         self._text_cache = None
         self._update_height()
         self.update()
@@ -384,18 +402,50 @@ class _SubtitleTextWidget(QWidget):
 
         return segments or [text]
 
+    def _ruby_font(self) -> QFont:
+        f = QFont(self._font)
+        f.setPointSizeF(max(1.0, f.pointSizeF() * self._furi_scale))
+        return f
+
+    def _unit_width(self, seg, fm, rfm) -> float:
+        w = float(fm.horizontalAdvance(seg.surface))
+        if seg.reading:
+            w = max(w, float(rfm.horizontalAdvance(seg.reading)))
+        return w
+
     def _rewrap(self):
         """Recalculate wrapped lines from current text."""
+        self._ruby_lines = []
         if not self._text:
             self._wrapped_lines = []
+        elif self._segments and furigana.has_ruby(self._segments):
+            fm = QFontMetrics(self._font)
+            rfm = QFontMetrics(self._ruby_font())
+            ow = self._outline_width if self._outline_enabled else 0
+            avail_w = self.width() - ow * 2
+            if avail_w <= 0:
+                avail_w = 10 ** 6  # not laid out yet
+            self._ruby_lines = furigana.wrap_segments(
+                self._segments, lambda s: self._unit_width(s, fm, rfm), avail_w
+            )
+            self._wrapped_lines = ["".join(s.surface for s in ln) for ln in self._ruby_lines]
         else:
             self._wrapped_lines = self.split_text(self._text)
 
-    def desired_height(self) -> int:
+    def _line_heights(self) -> list:
+        """Per-line heights; lines containing ruby get an extra row for the reading."""
         fm = QFontMetrics(self._font)
+        if not self._ruby_lines:
+            return [fm.lineSpacing()] * max(len(self._wrapped_lines), 1)
+        extra = QFontMetrics(self._ruby_font()).height()
+        return [
+            fm.lineSpacing() + (extra if any(s.reading for s in ln) else 0)
+            for ln in self._ruby_lines
+        ]
+
+    def desired_height(self) -> int:
         ow = self._outline_width if self._outline_enabled else 0
-        n = max(len(self._wrapped_lines), 1)
-        return fm.lineSpacing() * n + ow * 2 + 4
+        return sum(self._line_heights()) + ow * 2 + 4
 
     def _update_height(self):
         self._rewrap()
@@ -439,6 +489,31 @@ class _SubtitleTextWidget(QWidget):
         y = ow + fm.ascent()
 
         path = QPainterPath()
+        if self._ruby_lines:
+            rfont = self._ruby_font()
+            rfm = QFontMetrics(rfont)
+            top = float(ow)
+            for ln, lh in zip(self._ruby_lines, self._line_heights()):
+                has_ruby = any(s.reading for s in ln)
+                extra = rfm.height() if has_ruby else 0
+                widths = [self._unit_width(s, fm, rfm) for s in ln]
+                text_w = sum(widths)
+                if self._align == "center":
+                    x = (w - text_w) / 2
+                elif self._align == "right":
+                    x = w - text_w - ow
+                else:
+                    x = float(ow)
+                base_y = top + extra + fm.ascent()
+                for s, uw in zip(ln, widths):
+                    bw = fm.horizontalAdvance(s.surface)
+                    path.addText(x + (uw - bw) / 2, base_y, self._font, s.surface)
+                    if s.reading:
+                        rw = rfm.horizontalAdvance(s.reading)
+                        path.addText(x + (uw - rw) / 2, top + rfm.ascent(), rfont, s.reading)
+                    x += uw
+                top += lh
+            lines = []
         for line in lines:
             text_w = fm.horizontalAdvance(line)
             if self._align == "center":
@@ -495,7 +570,7 @@ class SubtitleWindow(QWidget):
     height auto-fits to text content.
     """
 
-    update_text_signal = pyqtSignal(str, str)  # original, translations_json
+    update_text_signal = pyqtSignal(str, str, str)  # original, translations_json, source_lang
     position_changed = pyqtSignal()
     window_closed = pyqtSignal()
 
@@ -503,7 +578,8 @@ class SubtitleWindow(QWidget):
         super().__init__()
         self._settings = _merge_settings(DEFAULT_SUBTITLE_WIN_SETTINGS, settings)
         self._text_widgets = []
-        self._sentences = []  # [(original, {lang: text, ...}), ...]
+        self._sentences = []  # [(original, {lang: text, ...}, source_lang), ...]
+        self._furigana = furigana.normalize_settings(None)
         self._drag_pos = None
         self._bg_pixmap = None
         self._click_through = bool(self._settings.get("click_through", False))
@@ -599,6 +675,7 @@ class SubtitleWindow(QWidget):
                 continue
             tw = _SubtitleTextWidget()
             tw.set_config(line_cfg)
+            tw.set_furigana_scale(self._furigana["furigana_scale"])
             tw.height_changed.connect(self._fit_height_animated)
             self._text_widgets.append(tw)
             self._content_layout.addWidget(tw)
@@ -683,6 +760,7 @@ class SubtitleWindow(QWidget):
                 continue
             tw = _SubtitleTextWidget()
             tw.set_config(line_cfg)
+            tw.set_furigana_scale(self._furigana["furigana_scale"])
             tw.height_changed.connect(self._fit_height_animated)
             self._text_widgets.append(tw)
             self._content_layout.addWidget(tw)
@@ -819,19 +897,36 @@ class SubtitleWindow(QWidget):
         super().paintEvent(event)
 
     # --- Text updates ---
-    def update_text(self, original: str, translations: dict | str):
+    def update_text(self, original: str, translations: dict | str, source_lang: str = ""):
         """Thread-safe text update.
 
         translations: dict mapping lang code to translated text,
                       or a plain string (backward compat, treated as primary target).
+        source_lang: recognized language of `original`; furigana only applies to "ja".
         """
         if isinstance(translations, str):
             # Backward compat: wrap in dict with empty key
             translations = {"": translations}
-        self.update_text_signal.emit(original, json.dumps(translations, ensure_ascii=False))
+        # Caller thread (not the UI thread): warm the furigana cache so rendering
+        # on the UI thread is a lookup.
+        if furigana.wanted(self._furigana, source_lang, "subtitle"):
+            furigana.annotate(original)
+        self.update_text_signal.emit(
+            original, json.dumps(translations, ensure_ascii=False), source_lang
+        )
 
-    @pyqtSlot(str, str)
-    def _on_update_text(self, original: str, translations_json: str):
+    def set_furigana(self, settings: dict):
+        """Apply furigana_* settings (any dict containing them) and re-render."""
+        opts = furigana.normalize_settings(settings)
+        if opts == self._furigana:
+            return
+        self._furigana = opts
+        for tw in self._text_widgets:
+            tw.set_furigana_scale(opts["furigana_scale"])
+        self._refresh_display()
+
+    @pyqtSlot(str, str, str)
+    def _on_update_text(self, original: str, translations_json: str, source_lang: str = ""):
         translations = json.loads(translations_json)
         self._cancel_pending_segments()
 
@@ -841,20 +936,22 @@ class SubtitleWindow(QWidget):
         base_delay = max(0, int(self._min_display_ms - elapsed)) if self._last_insert_time > 0 else 0
 
         if base_delay == 0:
-            self._insert_sentence(original, translations)
+            self._insert_sentence(original, translations, source_lang)
         else:
             timer = QTimer(self)
             timer.setSingleShot(True)
             timer.setInterval(base_delay)
-            timer.timeout.connect(lambda o=original, t=translations: self._insert_sentence(o, t))
+            timer.timeout.connect(
+                lambda o=original, t=translations, sl=source_lang: self._insert_sentence(o, t, sl)
+            )
             timer.start()
             self._pending_segment_timers.append(timer)
 
-    def _insert_sentence(self, original: str, translations: dict):
+    def _insert_sentence(self, original: str, translations: dict, source_lang: str = ""):
         """Insert a single sentence and refresh display."""
 
         max_sentences = self._settings.get("sentences", 1)
-        self._sentences.append((original, translations))
+        self._sentences.append((original, translations, source_lang))
         if len(self._sentences) > max_sentences:
             self._sentences = self._sentences[-max_sentences:]
 
@@ -890,23 +987,42 @@ class SubtitleWindow(QWidget):
             line_type = cfg.get("type", "original")
 
             if line_type == "original":
-                texts = [s[0] for s in self._sentences if s[0]]
-            else:
-                lang = cfg.get("lang", "")
-                texts = []
-                for _, tl_dict in self._sentences:
-                    if isinstance(tl_dict, str):
-                        if tl_dict:
-                            texts.append(tl_dict)
-                    elif lang and lang in tl_dict:
-                        texts.append(tl_dict[lang])
-                    elif "" in tl_dict and tl_dict[""]:
-                        texts.append(tl_dict[""])
-                    else:
-                        for v in tl_dict.values():
-                            if v:
-                                texts.append(v)
-                                break
+                items = [(s[0], s[2]) for s in self._sentences if s[0]]
+                texts = [o for o, _ in items]
+                segments = None
+                if any(furigana.wanted(self._furigana, lg, "subtitle") for _, lg in items):
+                    parts = []
+                    for i, (o, lg) in enumerate(items):
+                        if i:
+                            parts.append(furigana.Segment(" | "))
+                        if furigana.wanted(self._furigana, lg, "subtitle"):
+                            parts.extend(furigana.annotate(o))
+                        else:
+                            parts.append(furigana.Segment(o))
+                    if furigana.has_ruby(parts):
+                        if self._furigana["furigana_mode"] == "paren":
+                            texts = [furigana.to_paren_text(parts)]
+                        else:
+                            segments = parts
+                tw.set_text(" | ".join(texts) if len(texts) > 1 else (texts[0] if texts else ""), segments)
+                wi += 1
+                continue
+
+            lang = cfg.get("lang", "")
+            texts = []
+            for _, tl_dict, _lang in self._sentences:
+                if isinstance(tl_dict, str):
+                    if tl_dict:
+                        texts.append(tl_dict)
+                elif lang and lang in tl_dict:
+                    texts.append(tl_dict[lang])
+                elif "" in tl_dict and tl_dict[""]:
+                    texts.append(tl_dict[""])
+                else:
+                    for v in tl_dict.values():
+                        if v:
+                            texts.append(v)
+                            break
             tw.set_text(" | ".join(texts) if len(texts) > 1 else (texts[0] if texts else ""))
             wi += 1
 

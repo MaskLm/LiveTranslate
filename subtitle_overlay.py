@@ -1,10 +1,12 @@
 import ctypes
 import os
+from typing import NamedTuple
 
 import psutil
+import furigana
 from i18n import t, LANGUAGES
 from PyQt6.QtCore import QPoint, QPropertyAnimation, QEasingCurve, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QCursor, QFont
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -190,11 +192,160 @@ def _hex_to_rgba(hex_color: str, opacity: int) -> str:
     return f"rgba({r},{g},{b},{opacity})"
 
 
+def _mix_hex(c1: str, c2: str, ratio: float) -> str:
+    """Blend hex color c1 toward c2 by `ratio` (0..1); falls back to c1 on bad input."""
+    try:
+        a, b = QColor(c1), QColor(c2)
+        if not a.isValid() or not b.isValid():
+            return c1
+        mix = lambda x, y: round(x + (y - x) * ratio)  # noqa: E731
+        return QColor(
+            mix(a.red(), b.red()), mix(a.green(), b.green()), mix(a.blue(), b.blue())
+        ).name()
+    except Exception:
+        return c1
+
+
+class _Run(NamedTuple):
+    """One colored piece of a _RubyLabel line; `reading` renders above the text."""
+
+    text: str
+    reading: str | None = None
+    color: str = "#ffffff"
+    pt: float | None = None  # font size override (points)
+
+
+class _RubyLabel(QWidget):
+    """Word-wrapping label that paints furigana above kanji.
+
+    Qt rich text has no <ruby>, so this lays out colored runs itself: ruby groups
+    are atomic wrap units (never split), plain text wraps per character / ASCII
+    word with the same breaking rules as the subtitle window (furigana.wrap_lines).
+    Not selectable; the message context menu copies the plain original instead.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._font = QFont()
+        self._scale = 0.5
+        self._units: list[_Run] = []
+        self._widths: list[float] = []
+        self._breaks: list[bool] = []
+        self._layout_cache: dict[int, tuple] = {}
+        sp = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    # -- fonts --
+    def _base_font(self, pt: float | None) -> QFont:
+        f = QFont(self._font)
+        if pt:
+            f.setPointSizeF(pt)
+        return f
+
+    def _ruby_font(self, pt: float | None) -> QFont:
+        f = self._base_font(pt)
+        f.setPointSizeF(max(1.0, f.pointSizeF() * self._scale))
+        return f
+
+    def set_content(self, runs: list[_Run], font: QFont, scale: float):
+        self._font = QFont(font)
+        self._scale = scale
+        units: list[_Run] = []
+        for r in runs:
+            if r.reading:
+                units.append(r)
+            else:
+                units.extend(r._replace(text=p) for p in furigana.split_plain(r.text))
+        self._units = units
+        self._widths, self._breaks = [], []
+        for u in units:
+            fm = QFontMetrics(self._base_font(u.pt))
+            w = float(fm.horizontalAdvance(u.text))
+            if u.reading:
+                w = max(w, float(QFontMetrics(self._ruby_font(u.pt)).horizontalAdvance(u.reading)))
+            self._widths.append(w)
+            self._breaks.append(furigana.breaks_after(u.text))
+        self._layout_cache.clear()
+        self.updateGeometry()
+        self.update()
+
+    def _layout_for(self, width: int):
+        """-> (lines [(start,end)], line_heights, line_baselines, ruby_rows, total_h)."""
+        hit = self._layout_cache.get(width)
+        if hit is not None:
+            return hit
+        lines = furigana.wrap_lines(self._widths, self._breaks, max(1, width))
+        heights, baselines, extras = [], [], []
+        total = 0
+        for a, b in lines:
+            seg = self._units[a:b]
+            extra = max(
+                (QFontMetrics(self._ruby_font(u.pt)).height() for u in seg if u.reading),
+                default=0,
+            )
+            fms = [QFontMetrics(self._base_font(u.pt)) for u in seg] or [QFontMetrics(self._font)]
+            ascent = max(fm.ascent() for fm in fms)
+            line_h = max(fm.lineSpacing() for fm in fms) + extra
+            heights.append(line_h)
+            baselines.append(extra + ascent)
+            extras.append(extra)
+            total += line_h
+        if not lines:
+            total = QFontMetrics(self._font).lineSpacing()
+        result = (lines, heights, baselines, extras, total)
+        if len(self._layout_cache) > 8:
+            self._layout_cache.clear()
+        self._layout_cache[width] = result
+        return result
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        return self._layout_for(w)[4]
+
+    def sizeHint(self) -> QSize:
+        w = int(sum(self._widths)) + 1 if self._widths else 10
+        w = min(w, 400)
+        return QSize(w, self.heightForWidth(w))
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(40, QFontMetrics(self._font).lineSpacing())
+
+    def paintEvent(self, event):
+        if not self._units:
+            return
+        lines, heights, baselines, extras, _total = self._layout_for(self.width())
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        y = 0
+        for (a, b), lh, base, extra in zip(lines, heights, baselines, extras):
+            x = 0.0
+            for u, uw in zip(self._units[a:b], self._widths[a:b]):
+                p.setPen(QColor(u.color))
+                bf = self._base_font(u.pt)
+                p.setFont(bf)
+                bw = QFontMetrics(bf).horizontalAdvance(u.text)
+                p.drawText(int(x + (uw - bw) / 2), y + base, u.text)
+                if u.reading:
+                    rf = self._ruby_font(u.pt)
+                    p.setFont(rf)
+                    rfm = QFontMetrics(rf)
+                    rw = rfm.horizontalAdvance(u.reading)
+                    p.drawText(int(x + (uw - rw) / 2), y + rfm.ascent(), u.reading)
+                x += uw
+            y += lh
+        p.end()
+
+
 class ChatMessage(QWidget):
     """Single chat message widget with original + async translation."""
 
     _current_style = DEFAULT_STYLE
     _compact_mode = False
+    _furigana_opts = furigana.normalize_settings(None)
 
     def __init__(
         self,
@@ -226,6 +377,8 @@ class ChatMessage(QWidget):
         self._header_label.setWordWrap(True)
         self._header_label.setStyleSheet("background: transparent;")
         self._layout.addWidget(self._header_label)
+        self._ruby_label = None  # created lazily when furigana ruby is shown
+        self._refresh_header(s)
 
         self._trans_label = QLabel(
             f'<span style="color:#999; font-style:italic;">{t("translating")}</span>'
@@ -238,16 +391,63 @@ class ChatMessage(QWidget):
         self._trans_label.setStyleSheet("background: transparent;")
         self._layout.addWidget(self._trans_label)
 
-    def _build_header_html(self, s):
+    def _furigana_segments(self):
+        """Annotated segments when furigana applies to this message, else None."""
+        o = self._furigana_opts
+        if not furigana.wanted(o, self._source_lang, "overlay"):
+            return None
+        segs = furigana.annotate(self._original)
+        return segs if furigana.has_ruby(segs) else None
+
+    def _original_html(self, s, segs):
+        if segs and self._furigana_opts["furigana_mode"] == "paren":
+            pt = max(1.0, s["original_font_size"] * self._furigana_opts["furigana_scale"])
+            dim = _mix_hex(s["original_color"], s["bg_color"], 0.35)
+            return "".join(
+                f'{_escape(g.surface)}<span style="color:{dim}; font-size:{pt:.1f}pt;">'
+                f"({_escape(g.reading)})</span>"
+                if g.reading
+                else _escape(g.surface)
+                for g in segs
+            )
+        return _escape(self._original)
+
+    def _refresh_header(self, s):
+        """Show either the HTML label or the custom-painted ruby label."""
+        segs = self._furigana_segments()
+        use_ruby = bool(segs) and self._furigana_opts["furigana_mode"] == "ruby"
+        font = QFont(s["original_font_family"], s["original_font_size"])
+        if use_ruby:
+            runs = []
+            if not self._compact_mode:
+                runs.append(_Run(f"[{self._timestamp}] ", None, s["timestamp_color"]))
+            runs.append(_Run(f"[{self._source_lang}] ", None, "#6cf"))
+            runs.extend(_Run(g.surface, g.reading, s["original_color"]) for g in segs)
+            if not self._compact_mode:
+                runs.append(_Run(f" ASR {self._asr_ms:.0f}ms", None, "#8b8", 9.0))
+            if self._ruby_label is None:
+                self._ruby_label = _RubyLabel()
+                self._layout.insertWidget(1, self._ruby_label)
+            self._ruby_label.set_content(runs, font, self._furigana_opts["furigana_scale"])
+            self._ruby_label.show()
+            self._header_label.hide()
+        else:
+            if self._ruby_label is not None:
+                self._ruby_label.hide()
+            self._header_label.setText(self._build_header_html(s, segs))
+            self._header_label.setFont(font)
+            self._header_label.show()
+
+    def _build_header_html(self, s, segs=None):
         if self._compact_mode:
             return (
                 f'<span style="color:#6cf;">[{self._source_lang}]</span> '
-                f'<span style="color:{s["original_color"]};">{_escape(self._original)}</span>'
+                f'<span style="color:{s["original_color"]};">{self._original_html(s, segs)}</span>'
             )
         return (
             f'<span style="color:{s["timestamp_color"]};">[{self._timestamp}]</span> '
             f'<span style="color:#6cf;">[{self._source_lang}]</span> '
-            f'<span style="color:{s["original_color"]};">{_escape(self._original)}</span> '
+            f'<span style="color:{s["original_color"]};">{self._original_html(s, segs)}</span> '
             f'<span style="color:#8b8; font-size:9pt;">ASR {self._asr_ms:.0f}ms</span>'
         )
 
@@ -297,10 +497,7 @@ class ChatMessage(QWidget):
             )
 
     def apply_style(self, s: dict):
-        self._header_label.setText(self._build_header_html(s))
-        self._header_label.setFont(
-            QFont(s["original_font_family"], s["original_font_size"])
-        )
+        self._refresh_header(s)
         self._trans_label.setFont(
             QFont(s["translation_font_family"], s["translation_font_size"])
         )
@@ -1183,6 +1380,15 @@ class SubtitleOverlay(QWidget):
         sb = self._scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    def set_furigana(self, settings: dict):
+        """Apply furigana_* settings (any dict containing them) and re-render messages."""
+        opts = furigana.normalize_settings(settings)
+        if opts == ChatMessage._furigana_opts:
+            return
+        ChatMessage._furigana_opts = opts
+        for msg in self._messages.values():
+            msg.apply_style(ChatMessage._current_style)
+
     def apply_style(self, style: dict):
         s = {**DEFAULT_STYLE, **style}
         # Migrate old single font_family to split fields
@@ -1254,6 +1460,10 @@ class SubtitleOverlay(QWidget):
 
     # Thread-safe public API
     def add_message(self, msg_id, timestamp, original, source_lang, asr_ms):
+        # Runs on the pipeline thread: warm the furigana cache so the UI thread
+        # only does a dict lookup when the message widget is built.
+        if furigana.wanted(ChatMessage._furigana_opts, source_lang, "overlay"):
+            furigana.annotate(original)
         self.add_message_signal.emit(msg_id, timestamp, original, source_lang, asr_ms)
 
     def update_translation(self, msg_id, translated, translate_ms):

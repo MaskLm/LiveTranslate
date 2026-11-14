@@ -74,6 +74,17 @@ label_timestamp_color: "Timestamp Color:"
 group_window: "Window"
 label_window_opacity: "Window Opacity:"
 
+group_furigana: "Furigana (Japanese)"
+furigana_enable: "Show furigana (readings) above kanji in Japanese original text"
+furigana_enable_tip: "Uses fugashi + unidic-lite. Only applies when the recognized language is Japanese."
+label_furigana_mode: "Reading Style:"
+furigana_mode_ruby: "Above kanji (ruby)"
+furigana_mode_paren: "Inline in parentheses"
+label_furigana_scale: "Reading Size:"
+furigana_scale_tip: "Reading font size relative to the base text"
+furigana_in_overlay: "Overlay original text"
+furigana_in_subtitle: "Subtitle window original line"
+
 # VAD / ASR tab
 group_asr_engine: "ASR Engine"
 label_engine: "Engine:"

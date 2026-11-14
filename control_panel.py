@@ -65,6 +65,7 @@ from asr_precision import (
     normalize as normalize_compute,
 )
 import asr_registry
+import furigana
 from app_version import get_app_version
 from i18n import t, LANGUAGES
 from subtitle_settings import SubtitleSettingsWidget
@@ -878,6 +879,47 @@ class ControlPanel(QWidget):
         win_layout.addWidget(self._window_opacity, 0, 1)
         layout.addWidget(win_group)
 
+        # Furigana group (stored as top-level settings, independent of style presets)
+        from PyQt6.QtWidgets import QCheckBox
+
+        fg = furigana.normalize_settings(self._current_settings)
+        furi_group = QGroupBox(t("group_furigana"))
+        furi_layout = QGridLayout(furi_group)
+        furi_layout.setColumnStretch(0, 1)
+        furi_layout.setColumnMinimumWidth(1, 180)
+        self._furigana_cb = QCheckBox(t("furigana_enable"))
+        self._furigana_cb.setToolTip(t("furigana_enable_tip"))
+        self._furigana_cb.setChecked(fg["furigana_enabled"])
+        self._furigana_cb.toggled.connect(self._auto_save)
+        furi_layout.addWidget(self._furigana_cb, 0, 0, 1, 2)
+        furi_layout.addWidget(QLabel(t("label_furigana_mode")), 1, 0)
+        self._furigana_mode = QComboBox()
+        self._furigana_mode.addItem(t("furigana_mode_ruby"), "ruby")
+        self._furigana_mode.addItem(t("furigana_mode_paren"), "paren")
+        self._furigana_mode.setCurrentIndex(
+            max(0, self._furigana_mode.findData(fg["furigana_mode"]))
+        )
+        self._furigana_mode.currentIndexChanged.connect(self._auto_save)
+        furi_layout.addWidget(self._furigana_mode, 1, 1)
+        furi_layout.addWidget(QLabel(t("label_furigana_scale")), 2, 0)
+        self._furigana_scale = QDoubleSpinBox()
+        self._furigana_scale.setRange(furigana.SCALE_MIN, furigana.SCALE_MAX)
+        self._furigana_scale.setSingleStep(0.05)
+        self._furigana_scale.setDecimals(2)
+        self._furigana_scale.setToolTip(t("furigana_scale_tip"))
+        self._furigana_scale.setValue(fg["furigana_scale"])
+        self._furigana_scale.valueChanged.connect(self._auto_save)
+        furi_layout.addWidget(self._furigana_scale, 2, 1)
+        self._furigana_overlay_cb = QCheckBox(t("furigana_in_overlay"))
+        self._furigana_overlay_cb.setChecked(fg["furigana_overlay"])
+        self._furigana_overlay_cb.toggled.connect(self._auto_save)
+        furi_layout.addWidget(self._furigana_overlay_cb, 3, 0, 1, 2)
+        self._furigana_subtitle_cb = QCheckBox(t("furigana_in_subtitle"))
+        self._furigana_subtitle_cb.setChecked(fg["furigana_subtitle"])
+        self._furigana_subtitle_cb.toggled.connect(self._auto_save)
+        furi_layout.addWidget(self._furigana_subtitle_cb, 4, 0, 1, 2)
+        layout.addWidget(furi_group)
+
         layout.addStretch()
         return widget
 
@@ -921,6 +963,15 @@ class ControlPanel(QWidget):
             "timestamp_color": self._ts_color_btn.property("hex_color"),
             "window_opacity": self._window_opacity.value(),
         }
+
+    def _collect_furigana(self) -> dict:
+        return furigana.normalize_settings({
+            "furigana_enabled": self._furigana_cb.isChecked(),
+            "furigana_mode": self._furigana_mode.currentData(),
+            "furigana_scale": self._furigana_scale.value(),
+            "furigana_overlay": self._furigana_overlay_cb.isChecked(),
+            "furigana_subtitle": self._furigana_subtitle_cb.isChecked(),
+        })
 
     def _apply_style_to_controls(self, s: dict):
         """Update all style controls to match a style dict, without triggering auto-save."""
@@ -1741,6 +1792,8 @@ class ControlPanel(QWidget):
             )
         if hasattr(self, "_style_preset"):
             self._current_settings["style"] = self._collect_style()
+        if hasattr(self, "_furigana_cb"):
+            self._current_settings.update(self._collect_furigana())
         safe = {
             k: v
             for k, v in self._current_settings.items()

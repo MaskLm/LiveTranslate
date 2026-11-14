@@ -33,6 +33,10 @@ transformers>=4.40.0
 # VAD (bundles the Silero v5 model in the wheel — no GitHub/torch.hub download)
 silero-vad>=5.0
 
+# Japanese furigana readings (context-aware MeCab analysis + bundled dictionary)
+fugashi>=1.3.0
+unidic-lite>=1.0.8
+
 # Model hubs
 modelscope>=1.20.0
 huggingface_hub>=0.20.0
