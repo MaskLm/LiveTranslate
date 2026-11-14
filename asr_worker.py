@@ -131,14 +131,14 @@ def _ct2_model_ref(model_size: str) -> str:
 
 
 def _load_engine(config: dict):
-    from model_manager import MODELS_DIR, apply_cache_env, reload_registry
+    from model_manager import MODELS_DIR, apply_cache_env, normalize_hub, reload_registry
 
     apply_cache_env()
     reload_registry()
 
     engine_type = config["engine_type"]
     device = config.get("device", "cpu")
-    hub = config.get("hub", "ms")
+    hub = normalize_hub(config.get("hub"))
     language = config.get("language", "auto")
     pad_seconds = config.get("pad_seconds")
 

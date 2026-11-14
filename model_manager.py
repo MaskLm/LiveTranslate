@@ -5,6 +5,21 @@ from pathlib import Path
 
 log = logging.getLogger("LiveTranslate.ModelManager")
 
+# Download source preference. Hugging Face is the default everywhere (also for
+# Chinese UI); ModelScope stays selectable. Order = UI combo order.
+DEFAULT_HUB = "hf"
+HUB_CHOICES = ("hf", "ms")
+
+
+def normalize_hub(value) -> str:
+    """Return 'hf' or 'ms'; anything missing/unknown falls back to DEFAULT_HUB."""
+    return value if value in HUB_CHOICES else DEFAULT_HUB
+
+
+def resolve_hub(settings) -> str:
+    """Hub from a settings dict; explicit saved values win, missing -> default."""
+    return normalize_hub((settings or {}).get("hub"))
+
 _PROXY_ENV_KEYS = (
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -91,7 +106,7 @@ ASR_MODEL_IDS_HF = {
 
 
 def asr_model_id(
-    engine_type: str, hub: str = "ms", funasr_model: str | None = None
+    engine_type: str, hub: str = DEFAULT_HUB, funasr_model: str | None = None
 ) -> str:
     """Return the repo id for an engine on the given hub ('ms' or 'hf')."""
     if engine_type == "funasr":
@@ -247,7 +262,7 @@ def funasr_supports_padding(model_key: str | None) -> bool:
     return bool(funasr_profile(model_key).get("supports_padding"))
 
 
-def funasr_model_id(model_key: str | None, hub: str = "ms") -> str:
+def funasr_model_id(model_key: str | None, hub: str = DEFAULT_HUB) -> str:
     profile = funasr_profile(model_key)
     return profile["huggingface_id"] if hub == "hf" else profile["modelscope_id"]
 
@@ -449,7 +464,7 @@ def _hf_has_transformers_weights(org: str, name: str) -> bool:
     return False
 
 
-def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
+def is_asr_cached(engine_type, model_size="medium", hub=DEFAULT_HUB) -> bool:
     if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
         model_key = (
             FUNASR_LEGACY_ENGINE_ALIASES[engine_type]
@@ -565,7 +580,7 @@ def get_hf_snapshot_path(repo_id: str) -> str | None:
     return None
 
 
-def get_local_model_path(engine_type, hub="ms", funasr_model: str | None = None):
+def get_local_model_path(engine_type, hub=DEFAULT_HUB, funasr_model: str | None = None):
     """Return local snapshot path if model is cached, else None.
 
     Checks the preferred hub first, then falls back to the other hub.
@@ -670,7 +685,7 @@ def qwen_weights_present(model_dir) -> bool:
     return any(f.suffix in (".safetensors", ".bin") for f in qwen_dir.iterdir())
 
 
-def ensure_qwen_weights(model_dir, hub: str = "ms") -> None:
+def ensure_qwen_weights(model_dir, hub: str = DEFAULT_HUB) -> None:
     """Fetch Qwen3-0.6B weights into a nano model's embedded subdir (one-time).
 
     Kept off the ASR worker startup path: its 180s ready timeout would otherwise
@@ -695,7 +710,7 @@ def ensure_qwen_weights(model_dir, hub: str = "ms") -> None:
     log.info("Qwen3-0.6B weights downloaded")
 
 
-def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
+def download_asr(engine, model_size="medium", hub=DEFAULT_HUB, proxy="system"):
     resolved = str(MODELS_DIR.resolve())
     ms_cache = os.path.join(resolved, "modelscope")
     hf_cache = os.path.join(resolved, "huggingface", "hub")

@@ -26,7 +26,7 @@ class SenseVoiceEngine:
     """Speech-to-text using FunASR SenseVoice."""
 
     def __init__(
-        self, model_name=None, device="cuda", hub="ms", pad_seconds=None, model_path=None,
+        self, model_name=None, device="cuda", hub="hf", pad_seconds=None, model_path=None,
         compute_type="auto",
     ):
         self._force_fp32 = str(compute_type).lower() in ("float32", "fp32")

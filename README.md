@@ -90,7 +90,7 @@ pip install -r requirements.txt
 
 ## First Launch
 
-1. Setup wizard appears — choose download source (ModelScope / HuggingFace) and cache path
+1. Setup wizard appears — choose download source (HuggingFace / ModelScope; HuggingFace is the default) and cache path
 2. Silero VAD + SenseVoice models download automatically (~1GB)
 3. Main UI appears when ready
 

@@ -18,6 +18,8 @@ from datetime import datetime
 
 from model_manager import (
     DEFAULT_FUNASR_MODEL,
+    DEFAULT_HUB,
+    resolve_hub,
     apply_cache_env,
     funasr_display_name,
     funasr_supports_padding,
@@ -506,10 +508,10 @@ class LiveTranslateApp:
             engine_type, settings.get("funasr_model", self._funasr_model_key)
         )
         device = settings.get("asr_device", self._asr_device)
-        hub = "ms"
+        hub = DEFAULT_HUB
         download_proxy = "system"
         if self._panel:
-            hub = settings.get("hub", "ms")
+            hub = resolve_hub(settings)
             download_proxy = settings.get("download_proxy", "system")
 
         model_size = self._config["asr"]["model_size"]
@@ -1846,13 +1848,13 @@ def main():
                 if current_engine == "funasr"
                 else saved.get("whisper_model_size", config["asr"]["model_size"])
             ),
-            saved.get("hub", "ms"),
+            resolve_hub(saved),
         )
         if missing:
             log.info(f"Missing models: {[m['name'] for m in missing]}")
             dlg = ModelDownloadDialog(
                 missing,
-                hub=saved.get("hub", "ms"),
+                hub=resolve_hub(saved),
                 proxy=saved.get("download_proxy", "system"),
             )
             if dlg.exec() != QDialog.DialogCode.Accepted:

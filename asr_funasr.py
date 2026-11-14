@@ -14,7 +14,7 @@ class FunASREngine:
         self,
         model_key: str = "sensevoice-small",
         device: str = "cuda",
-        hub: str = "ms",
+        hub: str = "hf",
         pad_seconds: float | None = None,
         compute_type: str = "auto",
     ):

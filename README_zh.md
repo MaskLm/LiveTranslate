@@ -90,7 +90,7 @@ pip install -r requirements.txt
 
 ## 首次使用
 
-1. 弹出设置向导——选择下载源（ModelScope 适合国内，HuggingFace 适合海外）和缓存路径
+1. 弹出设置向导——选择下载源（默认 HuggingFace，国内网络可改选 ModelScope）和缓存路径
 2. 自动下载 Silero VAD + SenseVoice 模型（约 1GB）
 3. 下载完成后进入主界面
 

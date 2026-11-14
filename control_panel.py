@@ -39,6 +39,9 @@ from dialogs import (
 )
 from model_manager import (
     DEFAULT_FUNASR_MODEL,
+    DEFAULT_HUB,
+    HUB_CHOICES,
+    resolve_hub,
     MODELS_DIR,
     _WHISPER_SIZES,
     whisper_display_name,
@@ -150,7 +153,7 @@ class ControlPanel(QWidget):
                     }
                 ],
                 "active_model": 0,
-                "hub": "ms",
+                "hub": DEFAULT_HUB,
             }
 
         reload_registry(self._current_settings.get("custom_asr_models"))
@@ -381,9 +384,8 @@ class ControlPanel(QWidget):
         self._mic_device.currentIndexChanged.connect(self._auto_save)
 
         self._hub_combo = QComboBox()
-        self._hub_combo.addItems([t("hub_modelscope"), t("hub_huggingface")])
-        saved_hub = s.get("hub", "ms")
-        self._hub_combo.setCurrentIndex(0 if saved_hub == "ms" else 1)
+        self._hub_combo.addItems([t("hub_huggingface"), t("hub_modelscope")])
+        self._hub_combo.setCurrentIndex(HUB_CHOICES.index(resolve_hub(s)))
         asr_layout.addWidget(QLabel(t("label_hub")), 8, 0)
         asr_layout.addWidget(self._hub_combo, 8, 1)
         self._hub_combo.currentIndexChanged.connect(self._auto_save)
@@ -1424,7 +1426,7 @@ class ControlPanel(QWidget):
         from model_manager import is_asr_cached
 
         size = self._selected_whisper_model()
-        cached = is_asr_cached("whisper", size, self._current_settings.get("hub", "ms"))
+        cached = is_asr_cached("whisper", size, resolve_hub(self._current_settings))
         if size not in _WHISPER_SIZES:
             if cached:
                 self._whisper_status.setText(t("whisper_local_ready"))
@@ -1453,7 +1455,7 @@ class ControlPanel(QWidget):
         from model_manager import is_asr_cached
 
         size = self._selected_whisper_model()
-        if is_asr_cached("whisper", size, self._current_settings.get("hub", "ms")):
+        if is_asr_cached("whisper", size, resolve_hub(self._current_settings)):
             self._auto_save()
 
     def _download_whisper(self):
@@ -1462,7 +1464,7 @@ class ControlPanel(QWidget):
         size = self._selected_whisper_model()
         if size not in _WHISPER_SIZES:
             return
-        hub = self._current_settings.get("hub", "ms")
+        hub = resolve_hub(self._current_settings)
         if is_asr_cached("whisper", size, hub):
             return
         missing = get_missing_models("whisper", size, hub)
@@ -1719,7 +1721,7 @@ class ControlPanel(QWidget):
         else:
             self._current_settings["mic_device"] = self._mic_device.currentText()
         self._current_settings["hub"] = (
-            "ms" if self._hub_combo.currentIndex() == 0 else "hf"
+            HUB_CHOICES[self._hub_combo.currentIndex()]
         )
         self._current_settings["sensevoice_pad_seconds"] = round(
             self._sensevoice_pad_seconds.value(), 2

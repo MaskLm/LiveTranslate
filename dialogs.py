@@ -29,10 +29,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from model_manager import download_asr, download_silero
+from model_manager import DEFAULT_HUB, HUB_CHOICES, download_asr, download_silero
 import model_form
 from translator_anthropic import ANTHROPIC_EFFORTS, ANTHROPIC_MODELS
-from i18n import t, get_lang
+from i18n import t
 
 log = logging.getLogger("LiveTranslate.Dialogs")
 
@@ -192,17 +192,12 @@ class SetupWizardDialog(QDialog):
         self._hub_combo = QComboBox()
         self._hub_combo.addItems(
             [
-                t("hub_modelscope_full"),
                 t("hub_huggingface_full"),
+                t("hub_modelscope_full"),
             ]
         )
-        # Default source by system language: Chinese -> ModelScope, others -> HuggingFace
-        _sys_lang = get_lang()
-        self._hub_combo.setCurrentIndex(0 if _sys_lang == "zh" else 1)
-        log.info(
-            f"Default hub by lang: {_sys_lang} -> "
-            f"{'ms (ModelScope)' if _sys_lang == 'zh' else 'hf (HuggingFace)'}"
-        )
+        # Hugging Face is the default for every UI language
+        self._hub_combo.setCurrentIndex(HUB_CHOICES.index(DEFAULT_HUB))
         hub_layout.addWidget(self._hub_combo)
         layout.addWidget(hub_group)
 
@@ -295,7 +290,7 @@ class SetupWizardDialog(QDialog):
         self._proxy_url.setEnabled(False)
         self._log_view.show()
 
-        hub = "ms" if self._hub_combo.currentIndex() == 0 else "hf"
+        hub = HUB_CHOICES[self._hub_combo.currentIndex()]
         self._proxy = self._download_proxy()
 
         logging.getLogger().addHandler(self._log_handler)
@@ -338,7 +333,7 @@ class SetupWizardDialog(QDialog):
             return
 
         self._append_log(f"\n{t('download_complete')}")
-        hub = "ms" if self._hub_combo.currentIndex() == 0 else "hf"
+        hub = HUB_CHOICES[self._hub_combo.currentIndex()]
         from control_panel import _save_settings
 
         settings = {
@@ -365,7 +360,7 @@ class ModelDownloadDialog(QDialog):
 
     _log_signal = pyqtSignal(str)
 
-    def __init__(self, missing_models, hub="ms", proxy="system", parent=None):
+    def __init__(self, missing_models, hub=DEFAULT_HUB, proxy="system", parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("window_download"))
         self.setMinimumWidth(520)
