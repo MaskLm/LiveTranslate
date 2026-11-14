@@ -1754,6 +1754,9 @@ class LiveTranslateApp:
 
 def main():
     setup_logging()
+    from app_version import read_version_info
+    _vi = read_version_info()
+    log.info(f"LiveTranslate version: {_vi['version']} ({_vi['commit'] or 'unknown'})")
     log.info("LiveTranslate starting...")
     config = load_config()
     config.setdefault("asr", {})

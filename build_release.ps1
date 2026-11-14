@@ -79,6 +79,13 @@ foreach ($d in $DropList) {
 }
 Write-Ok "Source exported"
 
+# Version stamp so users can tell which build they run (read by app_version.py).
+$FullSha = (& git rev-parse HEAD).Trim()
+$BuiltUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+[IO.File]::WriteAllText((Join-Path $Stage "VERSION"),
+    "version=$Tag`n" + "commit=$FullSha`n" + "built=$BuiltUtc`n",
+    (New-Object System.Text.UTF8Encoding($false)))
+
 # ── 3. Download uv (bundled for the first-run torch install) ──
 Write-Step "Downloading uv..."
 $UvZip = Join-Path $Work "uv.zip"

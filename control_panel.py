@@ -62,6 +62,7 @@ from asr_precision import (
     normalize as normalize_compute,
 )
 import asr_registry
+from app_version import get_app_version
 from i18n import t, LANGUAGES
 from subtitle_settings import SubtitleSettingsWidget
 
@@ -111,7 +112,7 @@ class ControlPanel(QWidget):
     def __init__(self, config, saved_settings=None):
         super().__init__()
         self._config = config
-        self.setWindowTitle(t("window_control_panel"))
+        self.setWindowTitle(f"{t('window_control_panel')} - {get_app_version()}")
         self.setMinimumSize(480, 420)
         self.resize(520, min(650, available_screen_height(self)))
 
