@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - 'claude/**'
   workflow_dispatch:
     inputs:
       version:
@@ -19,6 +21,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -37,11 +43,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Compute short sha
+        id: meta
+        shell: pwsh
+        run: |
+          $short = "${{ github.sha }}".Substring(0, 7)
+          "short=$short" >> $env:GITHUB_OUTPUT
+
       - name: Build portable zip
         shell: pwsh
         run: |
           $version = $env:INPUT_VERSION
           if (-not $version -and "${{ github.ref_type }}" -eq "tag") { $version = "${{ github.ref_name }}" }
+          if (-not $version -and "${{ github.event_name }}" -eq "push") { $version = "dev-${{ steps.meta.outputs.short }}" }
           if ($version) { ./build_release.ps1 -Version $version } else { ./build_release.ps1 }
 
       - name: Smoke check bundled Python
@@ -57,14 +71,17 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: LiveTranslate-portable
+          name: LiveTranslate-portable-${{ steps.meta.outputs.short }}
           path: release/*.zip
           compression-level: 0
+          retention-days: 14
 
       - name: Attach to GitHub Release (tag push)
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v3
         with:
+          name: ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: release/*.zip
 
       - name: Create pre-release (manual dispatch)
