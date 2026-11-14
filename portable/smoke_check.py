@@ -1,7 +1,6 @@
 """CI smoke test: run with the bundled Python, cwd = staged app folder.
 
-Besides plain imports it exercises everything the build's prune step could have
-over-trimmed: Qt platform/style/image/icon plugins, jieba, numba (llvmlite),
+Besides plain imports it exercises the native/runtime-heavy parts: Qt platform/style/image/icon plugins, jieba, numba (llvmlite),
 ctranslate2, av, scipy, sklearn, sherpa-onnx.
 """
 import ast
@@ -200,6 +199,29 @@ for name in FIND_ONLY:
         failed.append(f"{name}: not installed")
     else:
         print("present:", name)
+def check_transformers_core_deps():
+    """transformers imports torch lazily, so it cannot be imported here; instead
+    verify every non-extra requirement of transformers is installed (a missing
+    one surfaces at runtime as "Could not import module 'pipeline'")."""
+    from importlib import metadata
+    from packaging.requirements import Requirement
+
+    missing = []
+    for raw in metadata.requires("transformers") or []:
+        req = Requirement(raw)
+        if req.marker is not None and "extra" in str(req.marker):
+            continue
+        if req.marker is not None and not req.marker.evaluate({"extra": ""}):
+            continue
+        try:
+            metadata.distribution(req.name)
+        except metadata.PackageNotFoundError:
+            missing.append(req.name)
+    if missing:
+        raise RuntimeError(f"transformers requirements not installed: {missing}")
+
+
+check("transformers core deps", check_transformers_core_deps)
 check("app PyQt6 imports", check_app_qt_imports)
 check("Qt offscreen runtime (widget/painter/icon/plugins)", check_qt_runtime)
 check("jieba cut", check_jieba)

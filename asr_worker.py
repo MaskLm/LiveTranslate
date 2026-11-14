@@ -21,13 +21,26 @@ def _setup_logging():
     logging.getLogger("LiveTranslate").setLevel(logging.DEBUG)
 
 
+def describe_exception(exc: BaseException) -> str:
+    """str(exc) plus the __cause__/__context__ chain (lazy imports such as
+    transformers' "Could not import module 'pipeline'" hide the real error)."""
+    parts = [str(exc) or type(exc).__name__]
+    seen = {id(exc)}
+    cur = exc.__cause__ or exc.__context__
+    while cur is not None and id(cur) not in seen and len(parts) < 6:
+        seen.add(id(cur))
+        parts.append(f"{type(cur).__name__}: {cur}")
+        cur = cur.__cause__ or cur.__context__
+    return " <- caused by: ".join(parts)
+
+
 def _error_response(msg_id: str | None, exc: BaseException, recoverable: bool) -> dict:
     return {
         "id": msg_id,
         "ok": False,
         "type": "error",
         "error": {
-            "message": str(exc),
+            "message": describe_exception(exc),
             "traceback": traceback.format_exc(),
             "recoverable": recoverable,
         },
@@ -102,6 +115,21 @@ def _load_non_ct2_whisper(
     raise ValueError(f"Unsupported ASR model: {model_size}")
 
 
+def _ct2_model_ref(model_size: str) -> str:
+    """faster-whisper model argument for a CT2 registry key.
+
+    faster-whisper only knows its own size names (tiny..large-v3); registry
+    keys such as "anime-whisper-ct2" or "kotoba-whisper-v2.0" raise "Invalid
+    model size". Pass the downloaded snapshot dir, or the HF repo id, instead.
+    """
+    from model_manager import WHISPER_MODELS, get_hf_snapshot_path
+
+    entry = WHISPER_MODELS.get(model_size)
+    if not entry:
+        return model_size
+    return get_hf_snapshot_path(entry["repo"]) or entry["repo"]
+
+
 def _load_engine(config: dict):
     from model_manager import MODELS_DIR, apply_cache_env, reload_registry
 
@@ -170,7 +198,7 @@ def _load_engine(config: dict):
         if not download_root:
             download_root = str((MODELS_DIR / "huggingface" / "hub").resolve())
         engine = ASREngine(
-            model_size=config["model_size"],
+            model_size=_ct2_model_ref(config["model_size"]),
             device=parsed_device,
             device_index=device_index,
             compute_type=compute_type,
@@ -234,7 +262,7 @@ def worker_main(conn, config: dict):
             )
         )
     except BaseException as exc:
-        log.error(f"ASR worker load failed: {exc}", exc_info=True)
+        log.error(f"ASR worker load failed: {describe_exception(exc)}", exc_info=True)
         try:
             conn.send(_error_response(None, exc, recoverable=False))
         finally:

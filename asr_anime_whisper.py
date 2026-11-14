@@ -15,7 +15,9 @@ class AnimeWhisperEngine:
 
     def __init__(self, device="cuda", hub="hf", model_id=None, language="ja", compute_type="auto"):
         import torch
-        from transformers import pipeline
+        # Import the submodule directly: `from transformers import pipeline` is
+        # a lazy attribute that masks the real ImportError.
+        from transformers.pipelines import pipeline
         from model_manager import get_local_model_path
 
         if device.startswith("cuda") and not torch.cuda.is_available():
